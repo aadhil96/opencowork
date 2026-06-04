@@ -1,0 +1,117 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Light theme (default) ─────────────────────────────── */
+:root {
+  --c-bg:       #ffffff;
+  --c-sidebar:  #f7f7f8;
+  --c-surface:  #f7f7f8;
+  --c-elevated: #efefef;
+  --c-input:    #f4f4f4;
+  --c-border:   #e5e5e5;
+  --c-border2:  #ebebeb;
+  --c-text:     #0d0d0d;
+  --c-text2:    #333333;
+  --c-text3:    #878787;
+  --c-text4:    #b4b4b4;
+  --c-bubble:   #efefef;
+}
+
+/* ─── Dark theme ─────────────────────────────────────────── */
+.dark {
+  --c-bg:       #212121;
+  --c-sidebar:  #171717;
+  --c-surface:  #1a1a1a;
+  --c-elevated: #2a2a2a;
+  --c-input:    #2f2f2f;
+  --c-border:   #3a3a3a;
+  --c-border2:  #2a2a2a;
+  --c-text:     #ececec;
+  --c-text2:    #a0a0a0;
+  --c-text3:    #6b6b6b;
+  --c-text4:    #4a4a4a;
+  --c-bubble:   #2f2f2f;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--c-bg);
+  color: var(--c-text);
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--c-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--c-text4); }
+
+.drag-region { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+/* ─── Markdown message content ───────────────────────────── */
+.msg-content { font-size: 15px; line-height: 1.7; color: var(--c-text); }
+.msg-content p { @apply mb-3 last:mb-0; }
+.msg-content h1, .msg-content h2, .msg-content h3 {
+  color: var(--c-text); font-weight: 600; margin-top: 1.25rem; margin-bottom: 0.5rem;
+}
+.msg-content h1 { font-size: 1.2rem; }
+.msg-content h2 { font-size: 1.05rem; }
+.msg-content h3 { font-size: 0.95rem; }
+.msg-content ul, .msg-content ol { @apply mb-3 pl-4 space-y-1; }
+.msg-content li { color: var(--c-text); }
+.msg-content code {
+  background: var(--c-elevated); color: var(--c-text);
+  @apply px-1.5 py-0.5 rounded text-[13px] font-mono;
+}
+.msg-content pre {
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  @apply rounded-xl p-4 overflow-x-auto mb-3;
+}
+.msg-content pre code { background: transparent; padding: 0; font-size: 13px; }
+.msg-content strong { color: var(--c-text); font-weight: 600; }
+.msg-content em { color: var(--c-text2); font-style: italic; }
+.msg-content blockquote {
+  border-left: 2px solid var(--c-border); color: var(--c-text3);
+  @apply pl-4 italic my-3;
+}
+.msg-content a { color: #3b82f6; text-decoration: underline; text-underline-offset: 2px; }
+.msg-content table { @apply w-full text-sm mb-3; }
+.msg-content th { color: var(--c-text2); font-weight: 500; border-bottom: 1px solid var(--c-border); @apply text-left pb-2; }
+.msg-content td { color: var(--c-text2); border-bottom: 1px solid var(--c-border2); @apply py-2; }
+.msg-content hr { border-color: var(--c-border); @apply my-4; }
+
+/* ─── Document viewer prose ──────────────────────────────── */
+.doc-content {
+  font-size: 14px; line-height: 1.8;
+  color: var(--c-text2); font-family: Georgia, 'Times New Roman', serif;
+  white-space: pre-wrap;
+}
+
+/* ─── Animations ─────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fadeIn 0.2s ease-out; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.cursor-blink::after {
+  content: '▋';
+  animation: blink 1s infinite;
+  color: #3b82f6;
+  font-size: 0.8em;
+  margin-left: 2px;
+}
+
+textarea { transition: height 0.1s ease; }
