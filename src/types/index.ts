@@ -3,8 +3,10 @@ export interface Document {
   name: string
   ext: string
   path: string
+  size: number
   content: string
   rawData: string
+  extractionError?: string
   loadedAt: number
 }
 
@@ -25,10 +27,24 @@ export interface AgentTool {
   }
 }
 
+export interface BuiltInSkillSetting {
+  id: string
+  enabled: boolean
+}
+
+export interface CustomSkill {
+  id: string
+  name: string
+  instructions: string
+}
+
 export interface Settings {
   openrouterApiKey: string
   selectedModel: string
   systemPromptExtra: string
+  jurisdiction: string
+  builtInSkills: BuiltInSkillSetting[]
+  customSkills: CustomSkill[]
 }
 
 export type PanelMode = 'chat' | 'research'

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useAppStore } from '../../lib/store'
 import { streamChatCompletion, AVAILABLE_MODELS } from '../../lib/openrouter'
-import { LEGAL_TOOLS, buildChatSystemPrompt, buildResearchSystemPrompt, executeAgentTool } from '../../lib/agent'
+import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, executeAgentTool } from '../../lib/agent'
 import type { Message } from '../../types'
 
 const QUICK_ACTIONS = [
@@ -49,15 +49,15 @@ export default function ChatInput() {
 
     const currentDoc = getActiveDocument()
     const systemPrompt = panelMode === 'chat'
-      ? buildChatSystemPrompt(currentDoc, settings.systemPromptExtra)
-      : buildResearchSystemPrompt(settings.systemPromptExtra)
+      ? buildChatSystemPrompt(currentDoc, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills)
+      : buildResearchSystemPrompt(settings.jurisdiction, settings.systemPromptExtra)
 
     await streamChatCompletion(
       settings.openrouterApiKey,
       settings.selectedModel || AVAILABLE_MODELS[0].id,
       [...activeMessages(), userMsg],
       systemPrompt,
-      panelMode === 'chat' ? LEGAL_TOOLS : [],
+      panelMode === 'chat' ? getActiveTools(settings) : [],
       {
         onChunk: (chunk) => appendToLastMessage(chunk),
         onToolCall: async (name, input) => executeAgentTool(name, input, currentDoc),

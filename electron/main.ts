@@ -1,9 +1,17 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
-import { join } from 'path'
-import { readFileSync, existsSync } from 'fs'
+import { join, basename, extname } from 'path'
+import { readFileSync, statSync } from 'fs'
 import Store from 'electron-store'
+import mammoth from 'mammoth'
+import { createRequire } from 'module'
+
+const require = createRequire(import.meta.url)
+// pdf-parse is CJS — loaded via createRequire so it runs in Node.js context (main process)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pdfParse: (buf: Buffer) => Promise<{ text: string }> = require('pdf-parse')
 
 const store = new Store()
+const MAX_FILE_BYTES = 50 * 1024 * 1024
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -34,7 +42,6 @@ function createWindow(): void {
   }
 }
 
-// Open a file dialog and return file content
 ipcMain.handle('open-file', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -49,15 +56,39 @@ ipcMain.handle('open-file', async () => {
   if (result.canceled || result.filePaths.length === 0) return null
 
   const filePath = result.filePaths[0]
-  const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'document'
-  const ext = fileName.split('.').pop()?.toLowerCase() || ''
+  const fileName = basename(filePath)
+  const ext = extname(fileName).slice(1).toLowerCase()
+
+  let stat
+  try { stat = statSync(filePath) } catch { return { error: 'Cannot access file.' } }
+  if (stat.size > MAX_FILE_BYTES) return { error: 'File exceeds 50 MB limit.' }
+
   const buffer = readFileSync(filePath)
+  let content = ''
+  let extractionError: string | undefined
+
+  try {
+    if (ext === 'txt') {
+      content = buffer.toString('utf-8')
+    } else if (ext === 'docx' || ext === 'doc') {
+      const res = await mammoth.extractRawText({ buffer })
+      content = res.value.trim()
+    } else if (ext === 'pdf') {
+      const res = await pdfParse(buffer)
+      content = res.text.trim()
+    }
+  } catch (err) {
+    extractionError = err instanceof Error ? err.message : String(err)
+  }
 
   return {
     path: filePath,
     name: fileName,
     ext,
-    data: buffer.toString('base64')
+    size: stat.size,
+    data: buffer.toString('base64'),
+    content,
+    extractionError
   }
 })
 

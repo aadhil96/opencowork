@@ -26,16 +26,97 @@ export interface StreamCallbacks {
   onError: (err: string) => void
 }
 
-function buildApiMessages(messages: Message[], systemPrompt: string) {
-  const result: Array<{ role: string; content: string }> = [
-    { role: 'system', content: systemPrompt }
-  ]
+type ApiMessage = {
+  role: string
+  content: string | null
+  tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>
+  tool_call_id?: string
+}
+
+function buildApiMessages(messages: Message[], systemPrompt: string): ApiMessage[] {
+  const result: ApiMessage[] = [{ role: 'system', content: systemPrompt }]
   for (const m of messages) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if ((m.role as any) === 'tool') continue
     result.push({ role: m.role, content: m.content })
   }
   return result
+}
+
+function makeRequestBody(
+  model: string,
+  messages: ApiMessage[],
+  tools: AgentTool[]
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { model, messages, stream: true, max_tokens: 4096 }
+  if (tools.length > 0) { body.tools = tools; body.tool_choice = 'auto' }
+  return body
+}
+
+// Streams one response. Returns the tool call if the model invoked one, otherwise null.
+async function streamOnce(
+  apiKey: string,
+  model: string,
+  messages: ApiMessage[],
+  tools: AgentTool[],
+  onChunk: (text: string) => void
+): Promise<{ toolCall: { id: string; name: string; args: string } | null; error?: string }> {
+
+  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://opencowork.app',
+      'X-Title': 'OpenCowork'
+    },
+    body: JSON.stringify(makeRequestBody(model, messages, tools))
+  })
+
+  if (!response.ok) {
+    const err = await response.text()
+    return { toolCall: null, error: `API error ${response.status}: ${err}` }
+  }
+
+  const reader = response.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let toolCall: { id: string; name: string; args: string } | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() || ''
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (data === '[DONE]') break
+
+      try {
+        const json = JSON.parse(data)
+        const delta = json.choices?.[0]?.delta
+        if (!delta) continue
+
+        if (delta.content) onChunk(delta.content)
+
+        if (delta.tool_calls?.[0]) {
+          const tc = delta.tool_calls[0]
+          if (tc.function?.name) {
+            toolCall = { id: tc.id || 'call_0', name: tc.function.name, args: '' }
+          }
+          if (tc.function?.arguments && toolCall) {
+            toolCall.args += tc.function.arguments
+          }
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  }
+
+  return { toolCall }
 }
 
 export async function streamChatCompletion(
@@ -51,85 +132,42 @@ export async function streamChatCompletion(
     return
   }
 
-  const body: Record<string, unknown> = {
-    model,
-    messages: buildApiMessages(messages, systemPrompt),
-    stream: true,
-    max_tokens: 4096
-  }
-
-  if (tools.length > 0) {
-    body.tools = tools
-    body.tool_choice = 'auto'
-  }
-
   try {
-    const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://opencowork.app',
-        'X-Title': 'OpenCowork'
-      },
-      body: JSON.stringify(body)
-    })
+    const apiMessages = buildApiMessages(messages, systemPrompt)
 
-    if (!response.ok) {
-      const err = await response.text()
-      callbacks.onError(`API error ${response.status}: ${err}`)
-      return
+    // --- Round 1: initial request ---
+    const round1 = await streamOnce(apiKey, model, apiMessages, tools, callbacks.onChunk)
+
+    if (round1.error) { callbacks.onError(round1.error); return }
+
+    // --- Tool call detected: execute and do a second request ---
+    if (round1.toolCall && callbacks.onToolCall) {
+      const tc = round1.toolCall
+      let parsed: Record<string, unknown> = {}
+      try { parsed = JSON.parse(tc.args || '{}') } catch { /* keep empty */ }
+
+      const toolResult = await callbacks.onToolCall(tc.name, parsed)
+
+      // Build messages for round 2: add the assistant tool_call + the tool result
+      const round2Messages: ApiMessage[] = [
+        ...apiMessages,
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.args || '{}' } }]
+        },
+        {
+          role: 'tool',
+          content: toolResult,
+          tool_call_id: tc.id
+        }
+      ]
+
+      // Stream the final answer (no tools — force a text response)
+      const round2 = await streamOnce(apiKey, model, round2Messages, [], callbacks.onChunk)
+      if (round2.error) { callbacks.onError(round2.error); return }
     }
 
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let toolCallBuffer: { id: string; name: string; args: string } | null = null
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.slice(6).trim()
-        if (data === '[DONE]') {
-          if (toolCallBuffer && callbacks.onToolCall) {
-            const parsed = JSON.parse(toolCallBuffer.args || '{}')
-            const result = await callbacks.onToolCall(toolCallBuffer.name, parsed)
-            callbacks.onChunk(`\n\n*Tool result:* ${result}`)
-          }
-          callbacks.onDone()
-          return
-        }
-
-        try {
-          const json = JSON.parse(data)
-          const delta = json.choices?.[0]?.delta
-          if (!delta) continue
-
-          if (delta.content) {
-            callbacks.onChunk(delta.content)
-          }
-
-          if (delta.tool_calls?.[0]) {
-            const tc = delta.tool_calls[0]
-            if (tc.function?.name) {
-              toolCallBuffer = { id: tc.id || '', name: tc.function.name, args: '' }
-            }
-            if (tc.function?.arguments && toolCallBuffer) {
-              toolCallBuffer.args += tc.function.arguments
-            }
-          }
-        } catch {
-          // skip malformed SSE lines
-        }
-      }
-    }
     callbacks.onDone()
   } catch (err) {
     callbacks.onError(err instanceof Error ? err.message : 'Network error')

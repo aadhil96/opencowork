@@ -19,6 +19,7 @@ interface AppState {
   isStreaming: boolean
   settings: Settings
   settingsOpen: boolean
+  showSkillsPanel: boolean
   theme: 'light' | 'dark'
   setTheme: (t: 'light' | 'dark') => void
 
@@ -36,6 +37,7 @@ interface AppState {
   // Document actions
   setSessionDocument: (doc: Document) => void
   getActiveDocument: () => Document | null
+  removeDocument: () => void
 
   // UI
   setPanelMode: (mode: PanelMode) => void
@@ -43,6 +45,7 @@ interface AppState {
   setStreaming: (val: boolean) => void
   setSettings: (s: Partial<Settings>) => void
   setSettingsOpen: (open: boolean) => void
+  setShowSkillsPanel: (show: boolean) => void
 
   // Selectors
   activeSession: () => Session | null
@@ -52,7 +55,16 @@ interface AppState {
 const defaultSettings: Settings = {
   openrouterApiKey: '',
   selectedModel: 'openai/gpt-oss-120b:free',
-  systemPromptExtra: ''
+  systemPromptExtra: '',
+  jurisdiction: 'General / International',
+  builtInSkills: [
+    { id: 'extract_clauses',     enabled: true },
+    { id: 'identify_risks',      enabled: true },
+    { id: 'summarize_document',  enabled: true },
+    { id: 'search_document',     enabled: true },
+    { id: 'compare_to_standard', enabled: true },
+  ],
+  customSkills: []
 }
 
 function makeSession(): Session {
@@ -77,6 +89,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isStreaming: false,
   settings: defaultSettings,
   settingsOpen: false,
+  showSkillsPanel: true,
   theme: 'light',
   setTheme: (t) => {
     const html = document.documentElement
@@ -174,6 +187,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     return documents[session.documentId] ?? null
   },
 
+  removeDocument: () => {
+    set(state => {
+      const id = state.activeSessionId
+      return {
+        sessions: state.sessions.map(s =>
+          s.id === id ? { ...s, documentId: null, updatedAt: Date.now() } : s
+        ),
+        showDocPanel: false
+      }
+    })
+  },
+
   activeSession: () => {
     const { sessions, activeSessionId } = get()
     return sessions.find(s => s.id === activeSessionId) ?? null
@@ -189,5 +214,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShowDocPanel: (show) => set({ showDocPanel: show }),
   setStreaming: (val) => set({ isStreaming: val }),
   setSettings: (s) => set(state => ({ settings: { ...state.settings, ...s } })),
-  setSettingsOpen: (open) => set({ settingsOpen: open })
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setShowSkillsPanel: (show) => set({ showSkillsPanel: show })
 }))

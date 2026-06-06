@@ -1,4 +1,4 @@
-import type { AgentTool, Document, RiskFlag } from '../types'
+import type { AgentTool, Document, RiskFlag, Settings } from '../types'
 
 export const LEGAL_TOOLS: AgentTool[] = [
   {
@@ -84,6 +84,13 @@ export const LEGAL_TOOLS: AgentTool[] = [
   }
 ]
 
+export function getActiveTools(settings: Settings): AgentTool[] {
+  const enabled = new Set(
+    settings.builtInSkills.filter(s => s.enabled).map(s => s.id)
+  )
+  return LEGAL_TOOLS.filter(t => enabled.has(t.function.name))
+}
+
 export function executeAgentTool(
   toolName: string,
   input: Record<string, unknown>,
@@ -166,8 +173,11 @@ export function executeAgentTool(
   }
 }
 
-export function buildChatSystemPrompt(document: Document | null, extra: string): string {
+export function buildChatSystemPrompt(document: Document | null, jurisdiction: string, extra: string, customSkills?: Settings['customSkills']): string {
   const base = `You are OpenCowork, an expert AI legal analyst. You help lawyers, paralegals, and business professionals review contracts and legal documents.
+
+## Jurisdiction
+This analysis operates under **${jurisdiction}** law and legal standards. Apply the relevant statutory framework, regulatory requirements, and common legal practices specific to this jurisdiction. Where a clause would be interpreted differently in other jurisdictions, note it briefly.
 
 ${document ? `## Current Document: ${document.name}
 
@@ -180,17 +190,18 @@ ${document.content.length > 60000 ? '\n[Document truncated at 60,000 characters]
 You have access to the full document above. Answer questions about it accurately and cite specific sections when possible.` : 'No document is currently loaded. Ask the user to open a document using the Upload button.'}
 
 ## Your capabilities
-- Analyze contracts for risks, obligations, and unusual terms
+- Analyze contracts for risks, obligations, and unusual terms under ${jurisdiction} law
 - Extract specific clause types on demand
-- Compare terms to market standards
+- Compare terms to market standards in ${jurisdiction}
 - Explain legal concepts in plain language
 - Use available tools to perform structured analysis
 
-${extra ? `## Additional instructions:\n${extra}` : ''}`
+${extra ? `## Additional instructions:\n${extra}` : ''}
+${customSkills && customSkills.length > 0 ? `## Custom Skills\nThe user has configured these additional capabilities — apply them when relevant:\n${customSkills.map(s => `- **${s.name}**: ${s.instructions}`).join('\n')}` : ''}`
   return base
 }
 
-export function buildResearchSystemPrompt(extra: string): string {
+export function buildResearchSystemPrompt(jurisdiction: string, extra: string): string {
   return `You are OpenCowork Research, an expert legal research assistant with deep knowledge of:
 - Contract law and commercial agreements
 - Employment law and HR compliance
@@ -199,7 +210,10 @@ export function buildResearchSystemPrompt(extra: string): string {
 - Regulatory compliance
 - Case law and statutory interpretation
 
-Provide thorough, well-structured answers. Always note jurisdiction-specific nuances where relevant. Format responses with clear headings and bullet points where helpful.
+## Jurisdiction
+The user is operating under **${jurisdiction}** law. Prioritize laws, regulations, and case law from this jurisdiction. When answering, lead with the ${jurisdiction} position, then note key differences in other major jurisdictions if relevant.
+
+Provide thorough, well-structured answers. Format responses with clear headings and bullet points where helpful.
 
 ${extra ? `## Additional instructions:\n${extra}` : ''}`
 }

@@ -1,7 +1,8 @@
-import type { PanelMode } from '../../types'
 import { useAppStore } from '../../lib/store'
+import { useFileUpload } from '../../lib/useFileUpload'
+import type { PanelMode, Document } from '../../types'
 import { streamChatCompletion, AVAILABLE_MODELS } from '../../lib/openrouter'
-import { LEGAL_TOOLS, buildChatSystemPrompt, buildResearchSystemPrompt, executeAgentTool } from '../../lib/agent'
+import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, executeAgentTool } from '../../lib/agent'
 
 const RESEARCH_STARTERS = [
   'What is a standard liability cap in SaaS contracts?',
@@ -17,34 +18,200 @@ const CHAT_STARTERS = [
   'Explain the termination conditions in plain English'
 ]
 
-export default function EmptyState({ mode }: { mode: PanelMode }) {
-  const { getActiveDocument } = useAppStore()
-  const doc = getActiveDocument()
-  const starters = mode === 'research' ? RESEARCH_STARTERS : CHAT_STARTERS
-  const showStarters = mode === 'research' || !!doc
+function formatSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function DocTypeBadge({ ext }: { ext: string }) {
+  const styles: Record<string, string> = {
+    pdf:  'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+    docx: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+    doc:  'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+    txt:  'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  }
+  const cls = styles[ext.toLowerCase()] ?? styles.txt
+  return (
+    <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold tracking-wide uppercase flex-shrink-0 ${cls}`}>
+      {ext.toUpperCase()}
+    </span>
+  )
+}
+
+function UploadZone({ onUpload, isLoading, error }: { onUpload: () => void; isLoading: boolean; error: string | null }) {
+  return (
+    <div className="w-full max-w-md mx-auto">
+      <button
+        onClick={onUpload}
+        disabled={isLoading}
+        className="group w-full border-2 border-dashed border-c-border hover:border-c-text4 rounded-2xl p-10 text-center transition-all duration-200 hover:bg-c-surface disabled:opacity-60 disabled:cursor-not-allowed"
+      >
+        {/* Upload icon box */}
+        <div className="w-14 h-14 mx-auto mb-5 rounded-2xl bg-c-elevated border border-c-border flex items-center justify-center group-hover:border-c-text4 group-hover:bg-c-input transition-all duration-200">
+          {isLoading ? (
+            <span className="text-c-text3 text-lg animate-pulse">…</span>
+          ) : (
+            <span className="text-c-text3 text-xl">↑</span>
+          )}
+        </div>
+
+        <p className="text-c-text font-semibold text-sm mb-1.5">
+          {isLoading ? 'Processing document…' : 'Upload a document'}
+        </p>
+        <p className="text-c-text3 text-xs mb-5">
+          {isLoading
+            ? 'Extracting text content, please wait'
+            : 'Click to browse and select a file from your computer'}
+        </p>
+
+        {/* Format tags */}
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          {['PDF', 'DOCX', 'TXT'].map(t => (
+            <span
+              key={t}
+              className="px-2 py-0.5 rounded-md bg-c-elevated text-c-text3 text-[10px] font-semibold tracking-wider border border-c-border"
+            >
+              {t}
+            </span>
+          ))}
+          <span className="text-c-text4 text-[10px]">· Max 50 MB</span>
+        </div>
+      </button>
+
+      {error && (
+        <p className="mt-3 text-center text-xs text-red-500">{error}</p>
+      )}
+    </div>
+  )
+}
+
+function DocumentInfoCard({
+  doc, onReplace, onRemove, isReplacing
+}: {
+  doc: Document
+  onReplace: () => void
+  onRemove: () => void
+  isReplacing: boolean
+}) {
+  const words = doc.content.trim() ? doc.content.trim().split(/\s+/).filter(Boolean).length : 0
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-6 py-12 max-w-2xl mx-auto">
-      <div className="text-center mb-10">
+    <div className="w-full max-w-xl mx-auto mb-8 animate-fade-in">
+      <div className="bg-c-surface border border-c-border rounded-2xl overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3.5">
+          <DocTypeBadge ext={doc.ext} />
+
+          <div className="flex-1 min-w-0">
+            <p className="text-c-text font-medium text-sm truncate">{doc.name}</p>
+            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+              <span className="text-c-text3 text-xs">
+                {words > 0 ? `${words.toLocaleString()} words` : 'No text extracted'}
+              </span>
+              {doc.size > 0 && (
+                <>
+                  <span className="text-c-text4 text-xs">·</span>
+                  <span className="text-c-text3 text-xs">{formatSize(doc.size)}</span>
+                </>
+              )}
+              <span className="text-c-text4 text-xs">·</span>
+              <span className={`text-xs font-medium ${
+                doc.extractionError
+                  ? 'text-amber-500'
+                  : words > 0
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-c-text3'
+              }`}>
+                {doc.extractionError ? 'Extraction failed' : words > 0 ? 'Ready' : 'No text layer'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={onReplace}
+              disabled={isReplacing}
+              className="px-2.5 py-1 rounded-lg text-xs text-c-text3 hover:text-c-text hover:bg-c-elevated transition-colors disabled:opacity-50"
+            >
+              {isReplacing ? 'Loading…' : 'Replace'}
+            </button>
+            <button
+              onClick={onRemove}
+              className="px-2.5 py-1 rounded-lg text-xs text-c-text3 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+
+        {doc.extractionError && (
+          <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-900/20 border-t border-amber-200 dark:border-amber-900/30">
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              Text extraction failed. The AI cannot analyze this document's content. This often happens with scanned or image-only PDFs.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default function EmptyState({ mode }: { mode: PanelMode }) {
+  const { getActiveDocument, removeDocument } = useAppStore()
+  const { openFile, isLoading, error } = useFileUpload()
+  const doc = getActiveDocument()
+
+  // Chat mode with no document — show upload zone
+  if (mode === 'chat' && !doc) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full px-8 py-12">
+        <div className="text-center mb-8">
+          <h2 className="text-c-text text-2xl font-semibold mb-2">Contract Analysis</h2>
+          <p className="text-c-text3 text-sm max-w-sm mx-auto">
+            Upload a PDF, DOCX, or TXT file to start AI-powered contract review and analysis
+          </p>
+        </div>
+        <UploadZone onUpload={openFile} isLoading={isLoading} error={error} />
+        <p className="mt-8 text-xs text-c-text4 text-center">
+          You can also ask a general legal question in the chat below
+        </p>
+      </div>
+    )
+  }
+
+  // Chat mode with doc, or research mode — show starters
+  const starters = mode === 'research' ? RESEARCH_STARTERS : CHAT_STARTERS
+
+  return (
+    <div className="flex flex-col items-center px-6 pt-10 pb-6 max-w-2xl mx-auto w-full">
+
+      {/* Document info card (chat + doc loaded) */}
+      {mode === 'chat' && doc && (
+        <DocumentInfoCard
+          doc={doc}
+          onReplace={openFile}
+          onRemove={removeDocument}
+          isReplacing={isLoading}
+        />
+      )}
+
+      {/* Heading */}
+      <div className="text-center mb-8 w-full">
         <h2 className="text-c-text text-2xl font-semibold mb-2">
           {mode === 'research' ? 'Legal Research' : 'Contract Analysis'}
         </h2>
-        <p className="text-c-text3 text-sm max-w-sm">
+        <p className="text-c-text3 text-sm">
           {mode === 'research'
             ? 'Ask anything about law, contracts, compliance, or legal concepts.'
-            : doc
-            ? `"${doc.name}" is loaded. Ask anything about the document.`
-            : 'Attach a document above to start reviewing, or ask a general legal question.'}
+            : `"${doc?.name}" is loaded. Ask anything about the document.`}
         </p>
       </div>
 
-      {showStarters && (
-        <div className="grid grid-cols-2 gap-3 w-full max-w-xl">
-          {starters.map(q => (
-            <StarterCard key={q} question={q} mode={mode} />
-          ))}
-        </div>
-      )}
+      {/* Starter question cards */}
+      <div className="grid grid-cols-2 gap-3 w-full">
+        {starters.map(q => (
+          <StarterCard key={q} question={q} mode={mode} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -66,15 +233,15 @@ function StarterCard({ question, mode }: { question: string; mode: PanelMode }) 
     setStreaming(true)
 
     const systemPrompt = mode === 'chat'
-      ? buildChatSystemPrompt(doc, settings.systemPromptExtra)
-      : buildResearchSystemPrompt(settings.systemPromptExtra)
+      ? buildChatSystemPrompt(doc, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills)
+      : buildResearchSystemPrompt(settings.jurisdiction, settings.systemPromptExtra)
 
     await streamChatCompletion(
       settings.openrouterApiKey,
       settings.selectedModel || AVAILABLE_MODELS[0].id,
       [...activeMessages(), userMsg],
       systemPrompt,
-      mode === 'chat' ? LEGAL_TOOLS : [],
+      mode === 'chat' ? getActiveTools(settings) : [],
       {
         onChunk: (chunk: string) => appendToLastMessage(chunk),
         onToolCall: async (name: string, input: Record<string, unknown>) => executeAgentTool(name, input, doc),
