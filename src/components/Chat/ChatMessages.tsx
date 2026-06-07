@@ -38,9 +38,11 @@ function MessageRow({ msg, isLast, isStreaming }: {
 
   if (isUser) {
     return (
-      <div className="px-4 py-3 flex justify-end animate-fade-in">
-        <div className="max-w-[75%] px-4 py-3 bg-c-bubble rounded-2xl rounded-tr-sm text-[15px] text-c-text leading-[1.6] whitespace-pre-wrap">
-          {msg.content}
+      <div className="px-4 py-3 animate-fade-in">
+        <div className="max-w-3xl mx-auto flex justify-end">
+          <div className="max-w-[75%] px-4 py-3 bg-c-bubble rounded-2xl rounded-tr-sm text-[15px] text-c-text leading-[1.6] whitespace-pre-wrap">
+            {msg.content}
+          </div>
         </div>
       </div>
     )

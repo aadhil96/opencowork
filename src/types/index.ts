@@ -45,6 +45,16 @@ export interface Settings {
   jurisdiction: string
   builtInSkills: BuiltInSkillSetting[]
   customSkills: CustomSkill[]
+  activeSubAgentId: string
+}
+
+export interface SubAgent {
+  id: string
+  name: string
+  role: string
+  description: string
+  accent: string
+  systemPrompt: string
 }
 
 export type PanelMode = 'chat' | 'research'

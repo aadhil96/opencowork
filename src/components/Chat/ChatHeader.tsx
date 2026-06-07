@@ -1,5 +1,4 @@
 import { useAppStore } from '../../lib/store'
-import { useFileUpload } from '../../lib/useFileUpload'
 
 function DocTypeBadge({ ext }: { ext: string }) {
   const styles: Record<string, string> = {
@@ -21,7 +20,6 @@ export default function ChatHeader() {
     panelMode, setPanelMode, showDocPanel, setShowDocPanel,
     getActiveDocument, clearMessages, activeSession, removeDocument
   } = useAppStore()
-  const { openFile, isLoading, error } = useFileUpload()
 
   const doc = getActiveDocument()
   const session = activeSession()
@@ -56,58 +54,31 @@ export default function ChatHeader() {
       {/* Right controls */}
       <div className="no-drag flex items-center gap-1.5 ml-auto min-w-0">
 
-        {error && (
-          <span className="text-xs text-red-500 max-w-[180px] truncate flex-shrink-0" title={error}>
-            {error}
-          </span>
-        )}
-
-        {panelMode === 'chat' && (
+        {/* Loaded document badge */}
+        {panelMode === 'chat' && doc && (
           <>
-            {doc ? (
-              /* Loaded document badge */
-              <div className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-lg bg-c-surface border border-c-border min-w-0 max-w-[260px]">
-                <DocTypeBadge ext={doc.ext} />
-                <button
-                  onClick={openFile}
-                  disabled={isLoading}
-                  title="Click to replace document"
-                  className="text-c-text2 hover:text-c-text text-xs truncate transition-colors disabled:opacity-50 min-w-0"
-                >
-                  {isLoading ? 'Processing…' : doc.name}
-                </button>
-                <button
-                  onClick={removeDocument}
-                  title="Remove document"
-                  className="text-c-text4 hover:text-red-400 text-base leading-none ml-0.5 flex-shrink-0 transition-colors"
-                >
-                  ×
-                </button>
-              </div>
-            ) : (
-              /* No doc — upload trigger */
+            <div className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-lg bg-c-surface border border-c-border min-w-0 max-w-[260px]">
+              <DocTypeBadge ext={doc.ext} />
+              <span className="text-c-text2 text-xs truncate min-w-0">{doc.name}</span>
               <button
-                onClick={openFile}
-                disabled={isLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-c-text3 hover:text-c-text hover:bg-c-elevated border border-dashed border-c-border transition-colors disabled:opacity-50 flex-shrink-0"
+                onClick={removeDocument}
+                title="Remove document"
+                className="text-c-text4 hover:text-red-400 text-base leading-none ml-0.5 flex-shrink-0 transition-colors"
               >
-                <span className="text-sm leading-none">+</span>
-                {isLoading ? 'Processing…' : 'Upload document'}
+                ×
               </button>
-            )}
+            </div>
 
-            {doc && (
-              <button
-                onClick={() => setShowDocPanel(!showDocPanel)}
-                className={`px-2.5 py-1.5 rounded-lg text-xs transition-colors flex-shrink-0 ${
-                  showDocPanel
-                    ? 'text-blue-500 bg-c-elevated'
-                    : 'text-c-text3 hover:bg-c-elevated'
-                }`}
-              >
-                {showDocPanel ? 'Hide doc' : 'Show doc'}
-              </button>
-            )}
+            <button
+              onClick={() => setShowDocPanel(!showDocPanel)}
+              className={`px-2.5 py-1.5 rounded-lg text-xs transition-colors flex-shrink-0 ${
+                showDocPanel
+                  ? 'text-blue-500 bg-c-elevated'
+                  : 'text-c-text3 hover:bg-c-elevated'
+              }`}
+            >
+              {showDocPanel ? 'Hide doc' : 'Show doc'}
+            </button>
           </>
         )}
 

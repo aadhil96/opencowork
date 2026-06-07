@@ -22,6 +22,7 @@ declare global {
       storeSet: (key: string, value: unknown) => Promise<void>
       storeDelete: (key: string) => Promise<void>
       openExternal: (url: string) => Promise<void>
+      webSearch: (query: string) => Promise<string>
     }
   }
 }
@@ -37,10 +38,11 @@ export default function App() {
       const systemPromptExtra = ((await window.electronAPI.storeGet('systemPromptExtra')) as string) || ''
       const jurisdiction    = ((await window.electronAPI.storeGet('jurisdiction')) as string)     || 'General / International'
       const savedTheme      = ((await window.electronAPI.storeGet('theme')) as string) || 'light'
-      const builtInSkills   = (await window.electronAPI.storeGet('builtInSkills')) as import('./types').BuiltInSkillSetting[] | null
-      const customSkills    = (await window.electronAPI.storeGet('customSkills'))    as import('./types').CustomSkill[] | null
+      const builtInSkills    = (await window.electronAPI.storeGet('builtInSkills'))    as import('./types').BuiltInSkillSetting[] | null
+      const customSkills     = (await window.electronAPI.storeGet('customSkills'))     as import('./types').CustomSkill[] | null
+      const activeSubAgentId = ((await window.electronAPI.storeGet('activeSubAgentId')) as string) || 'general_counsel'
       setSettings({
-        openrouterApiKey: apiKey, selectedModel, systemPromptExtra, jurisdiction,
+        openrouterApiKey: apiKey, selectedModel, systemPromptExtra, jurisdiction, activeSubAgentId,
         ...(builtInSkills ? { builtInSkills } : {}),
         ...(customSkills  ? { customSkills  } : {}),
       })

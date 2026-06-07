@@ -64,7 +64,8 @@ const defaultSettings: Settings = {
     { id: 'search_document',     enabled: true },
     { id: 'compare_to_standard', enabled: true },
   ],
-  customSkills: []
+  customSkills: [],
+  activeSubAgentId: 'general_counsel'
 }
 
 function makeSession(): Session {
