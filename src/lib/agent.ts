@@ -1,4 +1,4 @@
-import type { AgentTool, Document, RiskFlag, Settings, SubAgent } from '../types'
+import type { AgentTool, Document, McpToolInfo, RiskFlag, Settings, SubAgent } from '../types'
 
 export const SUB_AGENTS: SubAgent[] = [
   {
@@ -337,99 +337,307 @@ export const LEGAL_TOOLS: AgentTool[] = [
         required: ['query']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'legal_search',
+      description: 'Search the CourtListener database for VERIFIED US case law. Returns real, citable cases with URLs and court details. USE THIS BEFORE making any case-law claim in deep-research mode. Never invent citations — if a case is not returned by this tool or by verify_citation, you must not cite it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query — case name, topic, or legal issue, e.g. "qualified immunity excessive force"' },
+          court: { type: 'string', description: 'Optional court filter, e.g. "scotus" for Supreme Court, "ca9" for 9th Circuit' }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'verify_citation',
+      description: 'Verify that a specific case citation is real by checking CourtListener. Use this for EVERY case you plan to cite. If the result begins with "UNVERIFIED", you must not include that citation in your response — either find an alternate verified case via legal_search, or tell the user no authoritative source was located.',
+      parameters: {
+        type: 'object',
+        properties: {
+          citation: { type: 'string', description: 'A case name or reporter cite, e.g. "Roe v. Wade" or "410 U.S. 113"' }
+        },
+        required: ['citation']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compare_documents',
+      description: 'Compare all documents currently loaded in this session against each other — surfaces conflicting terms, differing obligations, and inconsistent definitions. Only useful when two or more documents are attached.',
+      parameters: { type: 'object', properties: {}, required: [] }
+    }
   }
 ]
 
-export function getActiveTools(settings: Settings): AgentTool[] {
+// MCP tool names are namespaced so they never collide with built-in legal tools.
+// Tool names go to OpenAI-compatible APIs which require ^[a-zA-Z0-9_-]{1,64}$,
+// so we slug each component before composing. A side map remembers which real
+// serverId each slug routes back to (the user-visible name can be anything).
+const MCP_PREFIX = 'mcp__'
+const MAX_NAME = 64
+
+// The model-visible name is a slug (sanitized + length-capped); we keep a side
+// map back to the real serverId + original tool name so calls route correctly
+// even when the user picks a server name with spaces/special chars or when the
+// MCP server's own tool name happens to be longer than 64 chars.
+const mcpRoutes = new Map<string, { serverId: string; toolName: string }>()
+
+function slug(s: string): string {
+  const cleaned = s.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+  return cleaned || 'x'
+}
+
+export function mcpToolsToAgentTools(tools: McpToolInfo[]): AgentTool[] {
+  mcpRoutes.clear()
+  const seen = new Set<string>()
+  return tools
+    .filter(t => t.name !== '__error__')
+    .map(t => {
+      const prefix = slug(t.serverId)
+      const reserved = MCP_PREFIX.length * 2 + prefix.length
+      const baseToolSlug = slug(t.name).slice(0, Math.max(1, MAX_NAME - reserved))
+      // Deduplicate within this connect call in case slugs collide.
+      let toolSlug = baseToolSlug
+      let n = 1
+      while (seen.has(`${prefix}/${toolSlug}`)) {
+        const suffix = `_${n++}`
+        toolSlug = baseToolSlug.slice(0, Math.max(1, baseToolSlug.length - suffix.length)) + suffix
+      }
+      seen.add(`${prefix}/${toolSlug}`)
+
+      const fullName = `${MCP_PREFIX}${prefix}${MCP_PREFIX}${toolSlug}`.slice(0, MAX_NAME)
+      mcpRoutes.set(fullName, { serverId: t.serverId, toolName: t.name })
+      return {
+        type: 'function' as const,
+        function: {
+          name: fullName,
+          description: `[${t.serverName}] ${t.description}`.trim(),
+          parameters: (t.inputSchema && typeof t.inputSchema === 'object'
+            ? t.inputSchema
+            : { type: 'object', properties: {} }) as Record<string, unknown>
+        }
+      }
+    })
+}
+
+export function resolveMcpToolName(fullName: string): { serverId: string; name: string } | null {
+  if (!fullName.startsWith(MCP_PREFIX)) return null
+  const route = mcpRoutes.get(fullName)
+  return route ? { serverId: route.serverId, name: route.toolName } : null
+}
+
+// Tools the deep-research mode needs unconditionally so the model can verify
+// any case it would otherwise be tempted to invent.
+const DEEP_RESEARCH_TOOLS = new Set(['legal_search', 'verify_citation', 'web_search'])
+
+export function getActiveTools(settings: Settings, mcpTools: AgentTool[] = [], deepResearch = false): AgentTool[] {
   const enabled = new Set(
     settings.builtInSkills.filter(s => s.enabled).map(s => s.id)
   )
-  const tools = LEGAL_TOOLS.filter(t => enabled.has(t.function.name) || t.function.name === 'web_search')
-  // always include web_search for the web_researcher agent
-  return tools
+  // web_search and compare_documents are always available; in deep-research mode
+  // we additionally force-enable legal_search + verify_citation.
+  const always = new Set(['web_search', 'compare_documents'])
+  if (deepResearch) for (const t of DEEP_RESEARCH_TOOLS) always.add(t)
+  const builtIn = LEGAL_TOOLS.filter(t => enabled.has(t.function.name) || always.has(t.function.name))
+  return [...builtIn, ...mcpTools]
+}
+
+// Synonym sets so "indemnification" also catches "indemnify", "hold harmless", etc.
+const CLAUSE_SYNONYMS: Record<string, string[]> = {
+  indemnification:         ['indemnif', 'hold harmless', 'defend'],
+  termination:             ['terminat', 'expir', 'notice period', 'for cause', 'for convenience'],
+  payment:                 ['payment', 'fee', 'invoice', 'price', 'consideration', 'remuneration', 'net 30', 'net 60'],
+  confidentiality:         ['confidential', 'non-disclosure', 'proprietary information'],
+  liability:               ['liabilit', 'limitation of liability', 'liable', 'consequential damages', 'cap on'],
+  warranty:                ['warrant', 'representation', 'as-is', 'as is', 'fitness for'],
+  'governing law':         ['governing law', 'jurisdiction', 'venue', 'choice of law'],
+  'intellectual property': ['intellectual property', 'copyright', 'patent', 'trademark', 'work for hire', 'work made for hire'],
+  'force majeure':         ['force majeure', 'act of god', 'beyond the reasonable control', 'beyond its control'],
+  'dispute resolution':    ['arbitrat', 'mediat', 'dispute', 'litigation', 'tribunal'],
+  'non-compete':           ['non-compete', 'non compete', 'restrictive covenant', 'non-solicit', 'solicitation'],
+  'data protection':       ['personal data', 'data protection', 'gdpr', 'data processing', 'data subject'],
+}
+
+function splitBlocks(text: string): string[] {
+  return text.split(/\n\s*\n|\r?\n/).map(s => s.trim()).filter(s => s.length > 25)
+}
+
+function clampExcerpt(s: string, max = 400): string {
+  const clean = s.replace(/\s+/g, ' ').trim()
+  return clean.length > max ? clean.slice(0, max).trim() + '…' : clean
 }
 
 export function executeAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  document: Document | null
+  documents: Document[]
 ): string | Promise<string> {
-  if (!document) return 'No document is currently loaded.'
+  // MCP tools (`mcp__<server-slug>__<tool-slug>`) route via the side map back to
+  // the real serverId + original tool name. Slug collisions or unknown tools
+  // surface as a clear message rather than a silent miss.
+  if (toolName.startsWith(MCP_PREFIX)) {
+    if (!window.electronAPI?.mcpCallTool) return 'MCP is not available in this environment.'
+    const route = resolveMcpToolName(toolName)
+    if (!route) return `Unknown MCP tool: ${toolName}. Try reconnecting MCP servers in Settings.`
+    return window.electronAPI.mcpCallTool(route.serverId, route.name, input)
+  }
 
-  const text = document.content
+  // Web search is the only built-in tool that doesn't operate on a loaded document.
+  if (toolName === 'web_search') {
+    const query = String(input.query ?? '')
+    if (!window.electronAPI?.webSearch) return 'Web search is not available in this environment.'
+    return window.electronAPI.webSearch(query)
+  }
+
+  // Verified legal search and citation verification (CourtListener).
+  // Both are document-independent and route directly to the main process.
+  if (toolName === 'legal_search') {
+    if (!window.electronAPI?.legalSearch) return 'Legal search is not available in this environment.'
+    return window.electronAPI.legalSearch(String(input.query ?? ''), input.court ? String(input.court) : undefined)
+  }
+  if (toolName === 'verify_citation') {
+    if (!window.electronAPI?.verifyCitation) return 'Citation verification is not available in this environment.'
+    return window.electronAPI.verifyCitation(String(input.citation ?? ''))
+  }
+
+  if (documents.length === 0) return 'No document is currently loaded.'
+
+  // For multi-document sessions, scanning tools see every doc concatenated with a header.
+  const text = documents.length > 1
+    ? documents.map(d => `===== DOCUMENT: ${d.name} =====\n${d.content}`).join('\n\n')
+    : documents[0].content
 
   switch (toolName) {
     case 'extract_clauses': {
-      const clauseType = (input.clause_type as string).toLowerCase()
-      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 20)
-      const relevant = sentences.filter(s =>
-        s.toLowerCase().includes(clauseType) ||
-        clauseType.split(' ').every(word => s.toLowerCase().includes(word))
-      )
-      if (relevant.length === 0) return `No clauses explicitly mentioning "${input.clause_type}" found in the document.`
-      return `Found ${relevant.length} relevant clause(s) for "${input.clause_type}":\n\n` +
-        relevant.slice(0, 8).map((s, i) => `${i + 1}. ${s.trim()}`).join('\n\n')
+      const clauseType = String(input.clause_type ?? '').toLowerCase().trim()
+      if (!clauseType) return 'No clause type specified.'
+      const key = Object.keys(CLAUSE_SYNONYMS).find(k => k.includes(clauseType) || clauseType.includes(k))
+      const keywords = key ? CLAUSE_SYNONYMS[key] : clauseType.split(/\s+/).filter(w => w.length > 2)
+      const relevant = splitBlocks(text).filter(b => {
+        const lb = b.toLowerCase()
+        return keywords.some(kw => lb.includes(kw))
+      })
+      if (relevant.length === 0) {
+        return `No clauses matching "${input.clause_type}" found. Searched for: ${keywords.join(', ')}.`
+      }
+      return `Found ${relevant.length} passage(s) related to "${input.clause_type}" (showing up to 8):\n\n` +
+        relevant.slice(0, 8).map((b, i) => `${i + 1}. ${clampExcerpt(b)}`).join('\n\n')
     }
 
     case 'identify_risks': {
+      const perspective = String(input.perspective ?? 'general')
       const riskKeywords: Record<string, { severity: RiskFlag['severity']; reason: string }> = {
-        'unlimited liability': { severity: 'high', reason: 'Exposes party to uncapped financial risk' },
-        'indemnify and hold harmless': { severity: 'high', reason: 'Broad indemnification obligation' },
-        'sole discretion': { severity: 'medium', reason: 'Gives one party unchecked power to decide' },
-        'automatic renewal': { severity: 'medium', reason: 'Contract auto-renews without explicit consent' },
-        'unilateral': { severity: 'medium', reason: 'One-sided modification rights' },
-        'liquidated damages': { severity: 'medium', reason: 'Pre-determined penalties may be disproportionate' },
-        'non-compete': { severity: 'high', reason: 'May restrict future business activities' },
-        'perpetual license': { severity: 'medium', reason: 'Irrevocable grant with no expiry' },
-        'no warranty': { severity: 'medium', reason: 'Excludes all warranties including fitness for purpose' },
-        'as-is': { severity: 'medium', reason: 'No representations made about quality or condition' },
-        'irrevocable': { severity: 'high', reason: 'Cannot be undone once executed' }
+        'unlimited liability':         { severity: 'high',   reason: 'Exposes party to uncapped financial risk' },
+        'uncapped':                    { severity: 'high',   reason: 'No ceiling on liability or amounts owed' },
+        'indemnify and hold harmless': { severity: 'high',   reason: 'Broad indemnification obligation' },
+        'consequential damages':       { severity: 'high',   reason: 'Potential exposure to indirect/consequential losses' },
+        'sole discretion':             { severity: 'medium', reason: 'Gives one party unchecked power to decide' },
+        'automatic renewal':           { severity: 'medium', reason: 'Contract auto-renews without explicit consent' },
+        'unilateral':                  { severity: 'medium', reason: 'One-sided modification rights' },
+        'liquidated damages':          { severity: 'medium', reason: 'Pre-determined penalties may be disproportionate' },
+        'non-compete':                 { severity: 'high',   reason: 'May restrict future business activities' },
+        'perpetual license':           { severity: 'medium', reason: 'Irrevocable grant with no expiry' },
+        'no warranty':                 { severity: 'medium', reason: 'Excludes all warranties including fitness for purpose' },
+        'as-is':                       { severity: 'medium', reason: 'No representations made about quality or condition' },
+        'irrevocable':                 { severity: 'high',   reason: 'Cannot be undone once executed' },
+        'time is of the essence':      { severity: 'medium', reason: 'Strict deadlines; minor delay can be a material breach' },
+        'without notice':              { severity: 'medium', reason: 'Action permitted with no prior warning' },
+        'waive':                       { severity: 'medium', reason: 'A right is given up — check what protection is lost' },
       }
 
+      const lowerText = text.toLowerCase()
       const flags: RiskFlag[] = []
       for (const [keyword, meta] of Object.entries(riskKeywords)) {
-        if (text.toLowerCase().includes(keyword)) {
-          const idx = text.toLowerCase().indexOf(keyword)
-          const excerpt = text.slice(Math.max(0, idx - 60), idx + 100).trim()
-          flags.push({ severity: meta.severity, clause: `"...${excerpt}..."`, reason: meta.reason })
+        const idx = lowerText.indexOf(keyword)
+        if (idx !== -1) {
+          const excerpt = clampExcerpt(text.slice(Math.max(0, idx - 70), idx + 110), 180)
+          flags.push({ severity: meta.severity, clause: `"…${excerpt}…"`, reason: meta.reason })
         }
       }
 
       if (flags.length === 0) return 'No obvious high-risk clauses detected based on common risk patterns.'
 
-      const sorted = flags.sort((a, b) => {
-        const order = { high: 0, medium: 1, low: 2 }
-        return order[a.severity] - order[b.severity]
-      })
+      const order = { high: 0, medium: 1, low: 2 }
+      flags.sort((a, b) => order[a.severity] - order[b.severity])
 
-      return sorted.map(f =>
-        `[${f.severity.toUpperCase()}] ${f.reason}\n${f.clause}`
-      ).join('\n\n')
+      return `Risk scan from the **${perspective}** perspective — ${flags.length} flag(s):\n\n` +
+        flags.map(f => `[${f.severity.toUpperCase()}] ${f.reason}\n${f.clause}`).join('\n\n')
     }
 
     case 'summarize_document': {
-      const wordCount = text.split(/\s+/).length
-      const firstParagraph = text.slice(0, 800).trim()
-      return `Document: ${document.name}\nWord count: ~${wordCount}\n\nOpening:\n${firstParagraph}\n\n[The AI will generate a full structured summary based on the document content above]`
+      const words = text.split(/\s+/).filter(Boolean)
+      const partyMatch = text.match(/between\s+(.{3,80}?)\s+and\s+(.{3,80}?)[.,;\n]/i)
+      const parties = partyMatch ? `${partyMatch[1].trim()} ↔ ${partyMatch[2].trim()}` : 'Not clearly identified'
+      const month = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\.?'
+      const dateRe = new RegExp(
+        `\\b(\\d{1,2}\\s+${month}\\s+\\d{4}|${month}\\s+\\d{1,2},?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}/\\d{1,2}/\\d{2,4})\\b`,
+        'gi'
+      )
+      const dates = Array.from(new Set((text.match(dateRe) ?? []).map(d => d.trim()))).slice(0, 6)
+      const headings = text.split(/\r?\n/).map(l => l.trim()).filter(l =>
+        l.length > 3 && l.length < 80 &&
+        (/^\d+(\.\d+)*\.?\s+\S/.test(l) || (/^[A-Z0-9 ,&'()\-]+$/.test(l) && l.replace(/[^A-Za-z]/g, '').length > 3))
+      ).slice(0, 15)
+
+      return [
+        `Document(s): ${documents.map(d => d.name).join(', ')}`,
+        `Length: ~${words.length.toLocaleString()} words`,
+        `Parties: ${parties}`,
+        dates.length ? `Dates found: ${dates.join(', ')}` : 'Dates found: none detected',
+        headings.length ? `Section headings:\n${headings.map(h => `- ${h}`).join('\n')}` : '',
+        '\nUsing the data above plus the full document text in context, produce: (1) a 2-3 sentence overview, (2) parties & roles, (3) key obligations each way, (4) key dates / term, (5) notable or unusual terms.'
+      ].filter(Boolean).join('\n')
     }
 
     case 'search_document': {
-      const query = (input.query as string).toLowerCase()
-      const lines = text.split('\n').filter(l => l.trim().length > 0)
-      const matches = lines.filter(l => l.toLowerCase().includes(query))
-      if (matches.length === 0) return `No matches found for "${input.query}".`
-      return `Found ${matches.length} match(es) for "${input.query}":\n\n` +
-        matches.slice(0, 6).map((m, i) => `${i + 1}. ${m.trim()}`).join('\n\n')
+      const query = String(input.query ?? '').toLowerCase().trim()
+      if (!query) return 'No search query specified.'
+      const lowerText = text.toLowerCase()
+      const matches: string[] = []
+      let from = 0
+      while (matches.length < 12) {
+        const idx = lowerText.indexOf(query, from)
+        if (idx === -1) break
+        matches.push(clampExcerpt(text.slice(Math.max(0, idx - 70), idx + query.length + 90), 200))
+        from = idx + query.length
+      }
+      const unique = Array.from(new Set(matches))
+      if (unique.length === 0) return `No matches found for "${input.query}".`
+      return `Found ${unique.length}${matches.length >= 12 ? '+' : ''} match(es) for "${input.query}":\n\n` +
+        unique.slice(0, 6).map((m, i) => `${i + 1}. …${m}…`).join('\n\n')
     }
 
     case 'compare_to_standard': {
-      return `Clause analysis for: "${input.clause}"\n\n[The AI will compare this clause against market standard terms based on its training knowledge of commercial contracts]`
+      const clause = String(input.clause ?? '').trim()
+      if (!clause) return 'No clause specified to compare.'
+      // Pull the actual clause wording from the document so the model compares real text, not a guess.
+      const queryWords = clause.toLowerCase().split(/\s+/).filter(w => w.length > 3)
+      const found = splitBlocks(text).filter(b => {
+        const lb = b.toLowerCase()
+        return queryWords.some(w => lb.includes(w))
+      }).slice(0, 3)
+      const excerpt = found.length
+        ? found.map((b, i) => `${i + 1}. ${clampExcerpt(b)}`).join('\n\n')
+        : 'No matching clause text located in the document.'
+      return `Clause to compare: "${clause}"\n\nRelevant text from this document:\n${excerpt}\n\n` +
+        'Compare the wording above against market-standard terms: state whether it is more or less favorable than typical, what a balanced version looks like, and any missing protections.'
     }
 
-    case 'web_search': {
-      const query = input.query as string
-      if (!window.electronAPI?.webSearch) return 'Web search is not available in this environment.'
-      return window.electronAPI.webSearch(query)
+    case 'compare_documents': {
+      if (documents.length < 2) return 'Need at least two documents loaded to compare. Attach another document first.'
+      return documents.map(d => {
+        const words = d.content.split(/\s+/).filter(Boolean).length
+        return `### ${d.name} (~${words.toLocaleString()} words)\n${clampExcerpt(d.content, 600)}`
+      }).join('\n\n') +
+        '\n\nCompare these documents: highlight conflicting terms, differing obligations, inconsistent definitions, and which side each favors on the key clauses.'
     }
 
     default:
@@ -437,23 +645,35 @@ export function executeAgentTool(
   }
 }
 
-export function buildChatSystemPrompt(document: Document | null, jurisdiction: string, extra: string, customSkills?: Settings['customSkills'], subAgentId?: string): string {
+// Total document characters to embed in the system prompt, shared across all loaded docs.
+const DOC_CHAR_BUDGET = 60000
+
+function buildDocSection(documents: Document[]): string {
+  const perDoc = Math.floor(DOC_CHAR_BUDGET / documents.length)
+  const blocks = documents.map((d, i) => {
+    const slice = d.content.slice(0, perDoc)
+    const truncated = d.content.length > perDoc ? `\n[Document truncated at ${perDoc.toLocaleString()} characters]` : ''
+    return `## Document ${i + 1}: ${d.name}\n---\n${slice}${truncated}\n---`
+  })
+  const header = documents.length > 1
+    ? `## ${documents.length} documents are loaded. Use the compare_documents tool to contrast them, and always cite which document you are referring to.\n\n`
+    : ''
+  return header + blocks.join('\n\n') +
+    '\n\nAnswer questions about the document text above accurately, citing specific sections (and the document name when more than one is loaded).'
+}
+
+export function buildChatSystemPrompt(documents: Document[], jurisdiction: string, extra: string, customSkills?: Settings['customSkills'], subAgentId?: string, projectInstructions?: string, projectName?: string): string {
   const agent = getSubAgent(subAgentId ?? 'general_counsel')
+  const docSection = documents.length > 0
+    ? buildDocSection(documents)
+    : 'No document is currently loaded. Ask the user to attach a document using the paperclip button.'
   const base = `You are OpenCowork — acting as **${agent.name}** (${agent.role}). You help lawyers, paralegals, and business professionals review contracts and legal documents.
 ${agent.systemPrompt ? `\n## Specialist Mode: ${agent.name}\n${agent.systemPrompt}\n` : ''}
 
 ## Jurisdiction
 This analysis operates under **${jurisdiction}** law and legal standards. Apply the relevant statutory framework, regulatory requirements, and common legal practices specific to this jurisdiction. Where a clause would be interpreted differently in other jurisdictions, note it briefly.
 
-${document ? `## Current Document: ${document.name}
-
-FULL DOCUMENT TEXT:
----
-${document.content.slice(0, 60000)}
-${document.content.length > 60000 ? '\n[Document truncated at 60,000 characters]' : ''}
----
-
-You have access to the full document above. Answer questions about it accurately and cite specific sections when possible.` : 'No document is currently loaded. Ask the user to open a document using the Upload button.'}
+${docSection}
 
 ## Your capabilities
 - Analyze contracts for risks, obligations, and unusual terms under ${jurisdiction} law
@@ -462,9 +682,45 @@ You have access to the full document above. Answer questions about it accurately
 - Explain legal concepts in plain language
 - Use available tools to perform structured analysis
 
+${projectInstructions ? `## Project: ${projectName ?? 'Current'}\nThe user is working within a project with the following standing instructions — apply them throughout:\n${projectInstructions}` : ''}
 ${extra ? `## Additional instructions:\n${extra}` : ''}
 ${customSkills && customSkills.length > 0 ? `## Custom Skills\nThe user has configured these additional capabilities — apply them when relevant:\n${customSkills.map(s => `- **${s.name}**: ${s.instructions}`).join('\n')}` : ''}`
   return base
+}
+
+// Deep Research mode: aggressive anti-hallucination guardrails for citations.
+// The Mata v. Avianca sanctions (2023) and similar incidents trace back to
+// confident-sounding but fabricated case names + reporter cites. This prompt
+// mandates that every citation be backed by a tool call that returned VERIFIED.
+export function buildDeepResearchSystemPrompt(jurisdiction: string, extra: string): string {
+  return `You are OpenCowork Deep Research — a legal research assistant operating under STRICT citation discipline.
+
+## Jurisdiction
+Operating under **${jurisdiction}** law. Lead with the ${jurisdiction} position; note key differences elsewhere if relevant.
+
+## Citation rules (NON-NEGOTIABLE)
+1. You MUST NOT cite any case unless one of these is true in this conversation:
+   - It was returned by a \`legal_search\` tool call in this turn, OR
+   - \`verify_citation\` was called on it in this turn and returned a result starting with "VERIFIED".
+2. Before citing ANY case, call \`verify_citation\` with the citation. If the result starts with "UNVERIFIED", do NOT use that citation — search for a real one with \`legal_search\` or omit the point.
+3. Never invent reporter citations, docket numbers, judges, or dates. If you cannot find an authoritative source for a point, say so explicitly: "I could not locate an authoritative source for this point."
+4. Always include the CourtListener source URL alongside each case you cite.
+5. For statutes / regulations / non-case authorities, use \`web_search\` and quote a real source URL — do not paraphrase from memory without verification.
+
+## Coverage limitation
+The verification tools cover US federal and state case law via CourtListener. They do NOT cover UK, EU, or other jurisdictions reliably. For non-US authorities, use \`web_search\` and clearly flag the source as unverified by a court database.
+
+## Workflow
+For every legal question:
+1. Call \`legal_search\` (or \`web_search\` for non-case sources) to find candidate authorities.
+2. For each candidate you intend to cite, call \`verify_citation\`.
+3. Only then write your answer, citing only verified sources with URLs.
+4. Structure findings: Issue → Applicable Law → Verified Authorities → Current Position → Practical Implications.
+
+## What to do if verification fails
+Do NOT bluff. Say something like: "A search of CourtListener did not return a directly on-point authority for this question. I would recommend confirming in Westlaw or Lexis before relying on this point." That is a correct and professional answer.
+
+${extra ? `## Additional instructions:\n${extra}` : ''}`
 }
 
 export function buildResearchSystemPrompt(jurisdiction: string, extra: string): string {

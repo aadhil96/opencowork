@@ -20,9 +20,11 @@ export default {
         'c-bubble':   'var(--c-bubble)',
       },
       fontFamily: {
-        sans:  ['Inter', 'system-ui', 'sans-serif'],
-        mono:  ['JetBrains Mono', 'Fira Code', 'monospace'],
-        serif: ['Georgia', 'Times New Roman', 'serif'],
+        // Single-font app: every Tailwind font-* class resolves to Geist so the
+        // UI never visually mixes typefaces.
+        sans:  ['Geist', 'system-ui', 'sans-serif'],
+        mono:  ['Geist', 'system-ui', 'sans-serif'],
+        serif: ['Geist', 'system-ui', 'sans-serif'],
       }
     }
   },

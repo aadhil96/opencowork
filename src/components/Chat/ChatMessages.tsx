@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAppStore } from '../../lib/store'
@@ -35,6 +35,13 @@ function MessageRow({ msg, isLast, isStreaming }: {
 }) {
   const isUser = msg.role === 'user'
   const isEmpty = msg.content === '' && isStreaming && isLast && !isUser
+  const [exportOpen, setExportOpen] = useState(false)
+
+  function exportAs(format: 'docx' | 'md') {
+    setExportOpen(false)
+    const name = `OpenCowork-analysis-${new Date().toISOString().slice(0, 10)}`
+    window.electronAPI?.exportDocument({ defaultName: name, format, content: msg.content })
+  }
 
   if (isUser) {
     return (
@@ -63,12 +70,38 @@ function MessageRow({ msg, isLast, isStreaming }: {
             </div>
           )}
           {!isEmpty && msg.content && (
-            <button
-              onClick={() => navigator.clipboard.writeText(msg.content)}
-              className="mt-2 text-xs text-c-text3 hover:text-c-text2 transition-colors"
-            >
-              Copy
-            </button>
+            <div className="mt-2 flex items-center gap-3">
+              <button
+                onClick={() => navigator.clipboard.writeText(msg.content)}
+                className="text-xs text-c-text3 hover:text-c-text2 transition-colors"
+              >
+                Copy
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setExportOpen(v => !v)}
+                  className="text-xs text-c-text3 hover:text-c-text2 transition-colors"
+                >
+                  Export ▾
+                </button>
+                {exportOpen && (
+                  <div className="absolute left-0 top-5 z-10 bg-c-elevated border border-c-border rounded-lg shadow-lg py-1 min-w-[130px]">
+                    <button
+                      onClick={() => exportAs('docx')}
+                      className="w-full text-left px-3 py-1.5 text-xs text-c-text2 hover:bg-c-surface transition-colors"
+                    >
+                      Word (.docx)
+                    </button>
+                    <button
+                      onClick={() => exportAs('md')}
+                      className="w-full text-left px-3 py-1.5 text-xs text-c-text2 hover:bg-c-surface transition-colors"
+                    >
+                      Markdown (.md)
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>

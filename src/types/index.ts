@@ -5,6 +5,7 @@ export interface Document {
   path: string
   size: number
   content: string
+  html?: string
   rawData: string
   extractionError?: string
   loadedAt: number
@@ -38,6 +39,35 @@ export interface CustomSkill {
   instructions: string
 }
 
+// A Project groups related chat sessions and shares context (instructions +
+// documents) across all of them, so a multi-week matter doesn't bleed into
+// ad-hoc chats. Sessions without a project (projectId: null) are ungrouped.
+export interface Project {
+  id: string
+  name: string
+  instructions: string
+  documentIds: string[]
+  createdAt: number
+  updatedAt: number
+}
+
+export interface McpServerConfig {
+  id: string
+  name: string
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+  enabled?: boolean
+}
+
+export interface McpToolInfo {
+  serverId: string
+  serverName: string
+  name: string
+  description: string
+  inputSchema: unknown
+}
+
 export interface Settings {
   openrouterApiKey: string
   selectedModel: string
@@ -46,6 +76,13 @@ export interface Settings {
   builtInSkills: BuiltInSkillSetting[]
   customSkills: CustomSkill[]
   activeSubAgentId: string
+  // Custom OpenAI-compatible endpoint (Ollama / LM Studio / self-hosted). Empty = OpenRouter.
+  baseUrl: string
+  customModel: string
+  // Optional Tavily key for real web-search results.
+  tavilyApiKey: string
+  // User-configured MCP servers (extend the agent with external tools).
+  mcpServers: McpServerConfig[]
 }
 
 export interface SubAgent {

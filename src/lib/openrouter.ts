@@ -1,6 +1,9 @@
-import type { Message, AgentTool } from '../types'
+import type { Message, AgentTool, Settings } from '../types'
 
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
+
+// Max agent rounds (tool call → result → next request) before forcing a stop.
+const MAX_TOOL_ROUNDS = 6
 
 export const AVAILABLE_MODELS = [
   // Free models
@@ -19,6 +22,15 @@ export const AVAILABLE_MODELS = [
   { id: 'mistralai/mistral-large',     label: 'Mistral Large' }
 ]
 
+// Resolve which model + endpoint to use. A configured custom baseUrl (Ollama,
+// LM Studio, self-hosted) takes precedence over the OpenRouter model picker.
+export function resolveModel(settings: Settings): { model: string; baseUrl?: string } {
+  if (settings.baseUrl?.trim()) {
+    return { model: settings.customModel?.trim() || 'local-model', baseUrl: settings.baseUrl.trim() }
+  }
+  return { model: settings.selectedModel || AVAILABLE_MODELS[0].id }
+}
+
 export interface StreamCallbacks {
   onChunk: (text: string) => void
   onToolCall?: (name: string, input: Record<string, unknown>) => Promise<string>
@@ -33,11 +45,13 @@ type ApiMessage = {
   tool_call_id?: string
 }
 
+type ToolCall = { id: string; name: string; args: string }
+
 function buildApiMessages(messages: Message[], systemPrompt: string): ApiMessage[] {
   const result: ApiMessage[] = [{ role: 'system', content: systemPrompt }]
   for (const m of messages) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((m.role as any) === 'tool') continue
+    // Skip empty assistant placeholders — they're UI-only and some providers reject them.
+    if (m.role === 'assistant' && m.content === '') continue
     result.push({ role: m.role, content: m.content })
   }
   return result
@@ -53,35 +67,40 @@ function makeRequestBody(
   return body
 }
 
-// Streams one response. Returns the tool call if the model invoked one, otherwise null.
+// Streams one response. Returns any tool calls the model emitted (empty if it answered directly).
 async function streamOnce(
   apiKey: string,
   model: string,
+  baseUrl: string,
   messages: ApiMessage[],
   tools: AgentTool[],
-  onChunk: (text: string) => void
-): Promise<{ toolCall: { id: string; name: string; args: string } | null; error?: string }> {
+  onChunk: (text: string) => void,
+  signal?: AbortSignal
+): Promise<{ toolCalls: ToolCall[]; error?: string }> {
 
-  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      // Local servers (Ollama/LM Studio) ignore auth; send a placeholder so the header is well-formed.
+      Authorization: `Bearer ${apiKey || 'local'}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': 'https://opencowork.app',
       'X-Title': 'OpenCowork'
     },
-    body: JSON.stringify(makeRequestBody(model, messages, tools))
+    body: JSON.stringify(makeRequestBody(model, messages, tools)),
+    signal
   })
 
   if (!response.ok) {
     const err = await response.text()
-    return { toolCall: null, error: `API error ${response.status}: ${err}` }
+    return { toolCalls: [], error: `API error ${response.status}: ${err}` }
   }
 
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()
   let buf = ''
-  let toolCall: { id: string; name: string; args: string } | null = null
+  // Tool calls arrive as deltas keyed by index — name in the first delta, arguments streamed after.
+  const byIndex: Record<number, ToolCall> = {}
 
   while (true) {
     const { done, value } = await reader.read()
@@ -92,8 +111,9 @@ async function streamOnce(
     buf = lines.pop() || ''
 
     for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const data = line.slice(6).trim()
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const data = trimmed.slice(5).trim()
       if (data === '[DONE]') break
 
       try {
@@ -103,20 +123,75 @@ async function streamOnce(
 
         if (delta.content) onChunk(delta.content)
 
-        if (delta.tool_calls?.[0]) {
-          const tc = delta.tool_calls[0]
-          if (tc.function?.name) {
-            toolCall = { id: tc.id || 'call_0', name: tc.function.name, args: '' }
-          }
-          if (tc.function?.arguments && toolCall) {
-            toolCall.args += tc.function.arguments
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0
+            const cur = byIndex[idx] ?? (byIndex[idx] = { id: '', name: '', args: '' })
+            if (tc.id) cur.id = tc.id
+            if (tc.function?.name) cur.name += tc.function.name
+            if (tc.function?.arguments) cur.args += tc.function.arguments
           }
         }
       } catch { /* skip malformed lines */ }
     }
   }
 
-  return { toolCall }
+  const toolCalls = Object.keys(byIndex)
+    .sort((a, b) => Number(a) - Number(b))
+    .map(k => byIndex[Number(k)])
+    .filter(tc => tc.name)
+  toolCalls.forEach((tc, i) => { if (!tc.id) tc.id = `call_${i}` })
+
+  return { toolCalls }
+}
+
+// Non-streaming, short completion that turns the first user message + assistant
+// response into a 3-6 word session title for the sidebar. Cheap and best-effort:
+// failures return null so the caller falls back to the existing placeholder name.
+export async function generateTitle(
+  apiKey: string,
+  model: string,
+  userMessage: string,
+  assistantResponse: string,
+  options?: { baseUrl?: string }
+): Promise<string | null> {
+  const baseUrl = options?.baseUrl?.trim() || OPENROUTER_BASE
+  const isLocal = baseUrl !== OPENROUTER_BASE
+  if (!apiKey && !isLocal) return null
+
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey || 'local'}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://opencowork.app',
+        'X-Title': 'OpenCowork'
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You write very short chat titles. Output ONLY the title — 3 to 6 words, no quotes, no trailing punctuation, no preamble. Describe the conversation topic.' },
+          { role: 'user', content: `User: ${userMessage.slice(0, 600)}\n\nAssistant: ${assistantResponse.slice(0, 800)}\n\nTitle:` }
+        ],
+        max_tokens: 24,
+        temperature: 0.3,
+        stream: false
+      })
+    })
+    if (!res.ok) return null
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> }
+    const raw = data.choices?.[0]?.message?.content?.trim()
+    if (!raw) return null
+    // Sanitize: strip wrapping quotes/asterisks, trailing punctuation, collapse whitespace, length cap.
+    const cleaned = raw
+      .replace(/^[\s"'`*_]+|[\s"'`*_.]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 60)
+    return cleaned || null
+  } catch {
+    return null
+  }
 }
 
 export async function streamChatCompletion(
@@ -125,51 +200,51 @@ export async function streamChatCompletion(
   messages: Message[],
   systemPrompt: string,
   tools: AgentTool[],
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  options?: { signal?: AbortSignal; baseUrl?: string }
 ): Promise<void> {
-  if (!apiKey) {
+  const baseUrl = options?.baseUrl?.trim() || OPENROUTER_BASE
+  const isLocal = baseUrl !== OPENROUTER_BASE
+
+  // OpenRouter requires a key; local/self-hosted endpoints don't.
+  if (!apiKey && !isLocal) {
     callbacks.onError('No OpenRouter API key configured. Open Settings to add your key.')
     return
   }
 
   try {
     const apiMessages = buildApiMessages(messages, systemPrompt)
+    const canUseTools = tools.length > 0 && !!callbacks.onToolCall
 
-    // --- Round 1: initial request ---
-    const round1 = await streamOnce(apiKey, model, apiMessages, tools, callbacks.onChunk)
+    // Agentic loop: keep streaming until the model answers without requesting a tool.
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const { toolCalls, error } = await streamOnce(
+        apiKey, model, baseUrl, apiMessages, canUseTools ? tools : [], callbacks.onChunk, options?.signal
+      )
+      if (error) { callbacks.onError(error); return }
+      if (toolCalls.length === 0 || !callbacks.onToolCall) break
 
-    if (round1.error) { callbacks.onError(round1.error); return }
+      // Record the assistant's tool request, then run each tool and append its result.
+      apiMessages.push({
+        role: 'assistant',
+        content: null,
+        tool_calls: toolCalls.map(tc => ({
+          id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.args || '{}' }
+        }))
+      })
 
-    // --- Tool call detected: execute and do a second request ---
-    if (round1.toolCall && callbacks.onToolCall) {
-      const tc = round1.toolCall
-      let parsed: Record<string, unknown> = {}
-      try { parsed = JSON.parse(tc.args || '{}') } catch { /* keep empty */ }
-
-      const toolResult = await callbacks.onToolCall(tc.name, parsed)
-
-      // Build messages for round 2: add the assistant tool_call + the tool result
-      const round2Messages: ApiMessage[] = [
-        ...apiMessages,
-        {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.args || '{}' } }]
-        },
-        {
-          role: 'tool',
-          content: toolResult,
-          tool_call_id: tc.id
-        }
-      ]
-
-      // Stream the final answer (no tools — force a text response)
-      const round2 = await streamOnce(apiKey, model, round2Messages, [], callbacks.onChunk)
-      if (round2.error) { callbacks.onError(round2.error); return }
+      for (const tc of toolCalls) {
+        let parsed: Record<string, unknown> = {}
+        try { parsed = JSON.parse(tc.args || '{}') } catch { /* keep empty */ }
+        const result = await callbacks.onToolCall(tc.name, parsed)
+        apiMessages.push({ role: 'tool', content: result, tool_call_id: tc.id })
+      }
     }
 
     callbacks.onDone()
   } catch (err) {
+    // Aborts (user pressed Stop) are a graceful end, not an error.
+    if (err instanceof Error && err.name === 'AbortError') { callbacks.onDone(); return }
     callbacks.onError(err instanceof Error ? err.message : 'Network error')
   }
 }

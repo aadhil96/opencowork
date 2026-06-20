@@ -6,7 +6,7 @@ import type { OpenFileResult } from '../App'
 export function useFileUpload() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { setSessionDocument, setShowDocPanel } = useAppStore()
+  const { addSessionDocument, setShowDocPanel } = useAppStore()
 
   async function openFile() {
     if (!window.electronAPI) return
@@ -30,11 +30,12 @@ export function useFileUpload() {
         path: file.path,
         size: file.size,
         content: file.content,
+        html: file.html,
         rawData: file.data,
         extractionError: file.extractionError,
         loadedAt: Date.now()
       }
-      setSessionDocument(newDoc)
+      addSessionDocument(newDoc)
       setShowDocPanel(true)
     } catch {
       setError('Failed to open file.')

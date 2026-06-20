@@ -22,26 +22,56 @@ function usePdfBlobUrl(rawData: string | null): string | null {
 }
 
 export default function DocumentPanel() {
-  const { getActiveDocument, setShowDocPanel } = useAppStore()
-  const doc = getActiveDocument()
+  const { getActiveDocuments, setShowDocPanel } = useAppStore()
+  const docs = getActiveDocuments()
   const [search, setSearch] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Selected tab, falling back to the first doc if the selection was removed.
+  const doc = docs.find(d => d.id === selectedId) ?? docs[0] ?? null
   const isPdf = doc?.ext === 'pdf'
   const pdfUrl = usePdfBlobUrl(isPdf && doc ? doc.rawData : null)
 
   if (!doc) return null
 
+  function escapeHtml(s: string) {
+    return s.replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!)
+    )
+  }
+
+  // Returns HTML with only our own <mark> tags; all document-derived text is escaped
+  // first so untrusted content can never inject markup.
   function highlight(text: string) {
-    if (!search.trim()) return text
+    if (!search.trim()) return escapeHtml(text)
     const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return text.split(new RegExp(`(${escaped})`, 'gi')).map((part) =>
       part.toLowerCase() === search.toLowerCase()
-        ? `<mark class="bg-yellow-300/60 rounded">${part}</mark>`
-        : part
+        ? `<mark class="bg-yellow-300/60 rounded">${escapeHtml(part)}</mark>`
+        : escapeHtml(part)
     ).join('')
   }
 
   return (
     <div className="flex flex-col h-full bg-c-surface">
+      {/* Tabs — only shown when more than one document is loaded */}
+      {docs.length > 1 && (
+        <div className="flex items-center gap-1 px-2 pt-2 pb-1 border-b border-c-border2 flex-shrink-0 overflow-x-auto">
+          {docs.map(d => (
+            <button
+              key={d.id}
+              onClick={() => setSelectedId(d.id)}
+              title={d.name}
+              className={`px-2.5 py-1 rounded-md text-[11px] whitespace-nowrap transition-colors flex-shrink-0 max-w-[140px] truncate ${
+                d.id === doc.id ? 'bg-c-elevated text-c-text' : 'text-c-text3 hover:text-c-text hover:bg-c-elevated/50'
+              }`}
+            >
+              {d.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="flex items-center gap-2 px-3 py-2 border-b border-c-border2 flex-shrink-0 h-11">
         <input
           type="text"
@@ -65,9 +95,15 @@ export default function DocumentPanel() {
         </p>
       </div>
 
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden overflow-y-auto">
         {isPdf && pdfUrl ? (
           <iframe src={pdfUrl} className="w-full h-full border-none block" title={doc.name} />
+        ) : doc.html && !search.trim() ? (
+          // Formatted DOCX preview. mammoth produces escaped, semantic HTML, so it's safe to render.
+          // Falls back to the highlighted plain-text view while a search term is active.
+          <div className="p-5">
+            <div className="doc-html" dangerouslySetInnerHTML={{ __html: doc.html }} />
+          </div>
         ) : (
           <div className="p-5">
             <div

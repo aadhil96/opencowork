@@ -17,51 +17,31 @@ function DocTypeBadge({ ext }: { ext: string }) {
 
 export default function ChatHeader() {
   const {
-    panelMode, setPanelMode, showDocPanel, setShowDocPanel,
-    getActiveDocument, clearMessages, activeSession, removeDocument
+    showDocPanel, setShowDocPanel,
+    getActiveDocument, getActiveDocuments, clearMessages, activeSession, removeDocument
   } = useAppStore()
 
   const doc = getActiveDocument()
+  const docs = getActiveDocuments()
   const session = activeSession()
 
   return (
     <div className="drag-region flex-shrink-0 h-11 flex items-center px-4 border-b border-c-border2 bg-c-bg gap-3">
 
-      {/* Mode tabs */}
-      <div className="no-drag flex items-center gap-1 bg-c-elevated rounded-lg p-1 flex-shrink-0">
-        <button
-          onClick={() => setPanelMode('chat')}
-          className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-            panelMode === 'chat'
-              ? 'bg-c-bg text-c-text shadow-sm'
-              : 'text-c-text3 hover:text-c-text'
-          }`}
-        >
-          Document Chat
-        </button>
-        <button
-          onClick={() => setPanelMode('research')}
-          className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-            panelMode === 'research'
-              ? 'bg-c-bg text-c-text shadow-sm'
-              : 'text-c-text3 hover:text-c-text'
-          }`}
-        >
-          Legal Research
-        </button>
-      </div>
-
       {/* Right controls */}
       <div className="no-drag flex items-center gap-1.5 ml-auto min-w-0">
 
         {/* Loaded document badge */}
-        {panelMode === 'chat' && doc && (
+        {doc && (
           <>
             <div className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-lg bg-c-surface border border-c-border min-w-0 max-w-[260px]">
               <DocTypeBadge ext={doc.ext} />
               <span className="text-c-text2 text-xs truncate min-w-0">{doc.name}</span>
+              {docs.length > 1 && (
+                <span className="text-c-text4 text-[10px] flex-shrink-0">+{docs.length - 1}</span>
+              )}
               <button
-                onClick={removeDocument}
+                onClick={() => removeDocument(doc.id)}
                 title="Remove document"
                 className="text-c-text4 hover:text-red-400 text-base leading-none ml-0.5 flex-shrink-0 transition-colors"
               >
@@ -77,7 +57,7 @@ export default function ChatHeader() {
                   : 'text-c-text3 hover:bg-c-elevated'
               }`}
             >
-              {showDocPanel ? 'Hide doc' : 'Show doc'}
+              {showDocPanel ? 'Hide docs' : 'Show docs'}
             </button>
           </>
         )}

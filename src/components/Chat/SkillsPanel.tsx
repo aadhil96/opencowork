@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAppStore } from '../../lib/store'
-import { streamChatCompletion, AVAILABLE_MODELS } from '../../lib/openrouter'
+import { streamChatCompletion, resolveModel } from '../../lib/openrouter'
 import { getActiveTools, buildChatSystemPrompt, executeAgentTool } from '../../lib/agent'
 import type { Message } from '../../types'
 
@@ -61,9 +61,9 @@ function SkillCard({
 
 export default function SkillsPanel() {
   const {
-    settings, isStreaming,
+    settings, isStreaming, mcpTools,
     addMessage, appendToLastMessage, setStreaming,
-    getActiveDocument, activeMessages, panelMode
+    getActiveDocument, getActiveDocuments, activeMessages, panelMode
   } = useAppStore()
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -76,23 +76,27 @@ export default function SkillsPanel() {
 
   async function runSkill(prompt: string) {
     if (isStreaming || !doc) return
+    const docs = getActiveDocuments()
+    const history = activeMessages()
     const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content: prompt, timestamp: Date.now(), mode: panelMode }
     addMessage(userMsg)
     addMessage({ id: crypto.randomUUID(), role: 'assistant', content: '', timestamp: Date.now(), mode: panelMode })
     setStreaming(true)
-    const systemPrompt = buildChatSystemPrompt(doc, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills)
+    const systemPrompt = buildChatSystemPrompt(docs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills)
+    const { model, baseUrl } = resolveModel(settings)
     await streamChatCompletion(
       settings.openrouterApiKey,
-      settings.selectedModel || AVAILABLE_MODELS[0].id,
-      [...activeMessages(), userMsg],
+      model,
+      [...history, userMsg],
       systemPrompt,
-      getActiveTools(settings),
+      getActiveTools(settings, mcpTools),
       {
         onChunk: c => appendToLastMessage(c),
-        onToolCall: async (name, input) => executeAgentTool(name, input, doc),
+        onToolCall: async (name, input) => executeAgentTool(name, input, docs),
         onDone: () => setStreaming(false),
         onError: err => { appendToLastMessage(`\n\n> *Error: ${err}*`); setStreaming(false) }
-      }
+      },
+      { baseUrl }
     )
   }
 

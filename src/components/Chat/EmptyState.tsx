@@ -1,7 +1,7 @@
 import { useAppStore } from '../../lib/store'
-import { useFileUpload } from '../../lib/useFileUpload'
 import type { PanelMode, Document } from '../../types'
-import { streamChatCompletion, AVAILABLE_MODELS } from '../../lib/openrouter'
+import { streamChatCompletion, resolveModel } from '../../lib/openrouter'
+import { maybeGenerateSessionTitle } from '../../lib/titles'
 import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, executeAgentTool, detectSubAgent } from '../../lib/agent'
 
 const RESEARCH_STARTERS = [
@@ -25,6 +25,14 @@ const CHAT_STARTERS = [
   'Explain the termination conditions in plain English'
 ]
 
+// Time-based greeting, Spellbook-style. No personalization yet — we don't have
+// a name field in settings; once we do this can pick up settings.userName.
+function greet(): string {
+  const h = new Date().getHours()
+  const part = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening'
+  return `Good ${part}, let's get to work`
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -46,17 +54,15 @@ function DocTypeBadge({ ext }: { ext: string }) {
 }
 
 function DocumentInfoCard({
-  doc, onReplace, onRemove, isReplacing
+  doc, onRemove
 }: {
   doc: Document
-  onReplace: () => void
   onRemove: () => void
-  isReplacing: boolean
 }) {
   const words = doc.content.trim() ? doc.content.trim().split(/\s+/).filter(Boolean).length : 0
 
   return (
-    <div className="w-full max-w-xl mx-auto mb-8 animate-fade-in">
+    <div className="w-full max-w-xl mx-auto mb-3 animate-fade-in">
       <div className="bg-c-surface border border-c-border rounded-2xl overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3.5">
           <DocTypeBadge ext={doc.ext} />
@@ -86,13 +92,6 @@ function DocumentInfoCard({
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
-              onClick={onReplace}
-              disabled={isReplacing}
-              className="px-2.5 py-1 rounded-lg text-xs text-c-text3 hover:text-c-text hover:bg-c-elevated transition-colors disabled:opacity-50"
-            >
-              {isReplacing ? 'Loading…' : 'Replace'}
-            </button>
-            <button
               onClick={onRemove}
               className="px-2.5 py-1 rounded-lg text-xs text-c-text3 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
             >
@@ -114,9 +113,9 @@ function DocumentInfoCard({
 }
 
 export default function EmptyState({ mode }: { mode: PanelMode }) {
-  const { getActiveDocument, removeDocument } = useAppStore()
-  const { openFile, isLoading } = useFileUpload()
-  const doc = getActiveDocument()
+  const { getActiveDocuments, removeDocument } = useAppStore()
+  const docs = getActiveDocuments()
+  const doc = docs[0]
 
   const starters = mode === 'research'
     ? RESEARCH_STARTERS
@@ -127,31 +126,26 @@ export default function EmptyState({ mode }: { mode: PanelMode }) {
   return (
     <div className="flex flex-col items-center px-6 pt-10 pb-6 max-w-2xl mx-auto w-full">
 
-      {/* Document info card */}
-      {mode === 'chat' && doc && (
-        <DocumentInfoCard
-          doc={doc}
-          onReplace={openFile}
-          onRemove={removeDocument}
-          isReplacing={isLoading}
-        />
+      {/* Document info cards — one per loaded document */}
+      {mode === 'chat' && docs.length > 0 && (
+        <div className="w-full mb-5">
+          {docs.map(d => (
+            <DocumentInfoCard key={d.id} doc={d} onRemove={() => removeDocument(d.id)} />
+          ))}
+        </div>
       )}
 
-      {/* Heading */}
+      {/* Heading — Spellbook-style time-based greeting */}
       <div className="text-center mb-8 w-full">
-        <h2 className="text-c-text text-2xl font-semibold mb-2">
-          {mode === 'research'
-            ? 'Legal Research'
-            : doc
-              ? 'Contract Analysis'
-              : 'Legal Assistant'}
+        <h2 className="text-c-text text-[28px] font-semibold mb-2 tracking-tight">
+          {greet()}
         </h2>
         <p className="text-c-text3 text-sm">
           {mode === 'research'
             ? 'Ask anything about law, contracts, compliance, or legal concepts.'
             : doc
               ? `"${doc.name}" is loaded. Ask anything about the document.`
-              : 'Ask a legal question or attach a document using the paperclip button below.'}
+              : 'Ask a legal question, attach a contract, or run verified research.'}
         </p>
       </div>
 
@@ -167,38 +161,49 @@ export default function EmptyState({ mode }: { mode: PanelMode }) {
 
 function StarterCard({ question, mode }: { question: string; mode: PanelMode }) {
   const {
-    addMessage, appendToLastMessage, setStreaming,
-    settings, getActiveDocument, activeMessages, isStreaming
+    addMessage, appendToLastMessage, setStreaming, startStreaming,
+    settings, mcpTools, getActiveDocuments, activeMessages, isStreaming, activeSession, getActiveProject
   } = useAppStore()
 
   async function run() {
     if (isStreaming) return
-    const doc = getActiveDocument()
+    const docs = getActiveDocuments()
 
+    // First-turn capture for LLM-based session titling.
+    const session = activeSession()
+    const firstTurnSessionId = session && session.messages.length === 0 ? session.id : null
+
+    const history = activeMessages()
     const userMsg = { id: crypto.randomUUID(), role: 'user' as const, content: question, timestamp: Date.now(), mode }
     addMessage(userMsg)
     const assistantMsg = { id: crypto.randomUUID(), role: 'assistant' as const, content: '', timestamp: Date.now(), mode }
     addMessage(assistantMsg)
-    setStreaming(true)
+    const controller = new AbortController()
+    startStreaming(controller)
 
-    const autoAgentId = mode === 'chat' ? detectSubAgent(question, doc?.name) : undefined
+    const autoAgentId = mode === 'chat' ? detectSubAgent(question, docs.map(d => d.name).join(' ')) : undefined
+    const activeProject = getActiveProject()
     const systemPrompt = mode === 'chat'
-      ? buildChatSystemPrompt(doc, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, autoAgentId)
+      ? buildChatSystemPrompt(docs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, autoAgentId, activeProject?.instructions, activeProject?.name)
       : buildResearchSystemPrompt(settings.jurisdiction, settings.systemPromptExtra)
 
+    const { model, baseUrl } = resolveModel(settings)
     await streamChatCompletion(
       settings.openrouterApiKey,
-      settings.selectedModel || AVAILABLE_MODELS[0].id,
-      [...activeMessages(), userMsg],
+      model,
+      [...history, userMsg],
       systemPrompt,
-      mode === 'chat' ? getActiveTools(settings) : [],
+      mode === 'chat' ? getActiveTools(settings, mcpTools) : [],
       {
         onChunk: (chunk: string) => appendToLastMessage(chunk),
-        onToolCall: async (name: string, input: Record<string, unknown>) => executeAgentTool(name, input, doc),
+        onToolCall: async (name: string, input: Record<string, unknown>) => executeAgentTool(name, input, docs),
         onDone: () => setStreaming(false),
         onError: (err: string) => { appendToLastMessage(`\n\n> *Error: ${err}*`); setStreaming(false) }
-      }
+      },
+      { signal: controller.signal, baseUrl }
     )
+
+    if (firstTurnSessionId) maybeGenerateSessionTitle(firstTurnSessionId, question)
   }
 
   return (

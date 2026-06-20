@@ -1,4 +1,4 @@
-# OpenCowork
+f# OpenCowork
 
 Open source AI co-work desktop app for contract review and legal research.
 

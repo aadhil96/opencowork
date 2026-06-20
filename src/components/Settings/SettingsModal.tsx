@@ -1,15 +1,8 @@
 import { useState } from 'react'
 import { useAppStore } from '../../lib/store'
 import { AVAILABLE_MODELS } from '../../lib/openrouter'
-import type { BuiltInSkillSetting, CustomSkill } from '../../types'
-
-const JURISDICTIONS = [
-  { group: 'General',              options: ['General / International'] },
-  { group: 'Americas',             options: ['United States (Federal)', 'United States — California', 'United States — New York', 'United States — Texas', 'Canada (Federal)', 'Canada — Ontario', 'Canada — Quebec', 'Brazil', 'Mexico', 'Argentina', 'Colombia'] },
-  { group: 'Europe',               options: ['United Kingdom (England & Wales)', 'United Kingdom — Scotland', 'European Union', 'Germany', 'France', 'Netherlands', 'Sweden', 'Switzerland', 'Spain', 'Italy', 'Ireland', 'Poland'] },
-  { group: 'Asia Pacific',         options: ['India', 'Singapore', 'Australia', 'New Zealand', 'Hong Kong', 'Japan', 'China (PRC)', 'South Korea', 'Malaysia', 'Indonesia', 'Thailand', 'Vietnam'] },
-  { group: 'Middle East & Africa', options: ['UAE (Dubai / DIFC)', 'UAE (Abu Dhabi)', 'Saudi Arabia', 'Qatar', 'South Africa', 'Nigeria', 'Kenya', 'Egypt'] },
-]
+import type { BuiltInSkillSetting, CustomSkill, McpServerConfig } from '../../types'
+import { JURISDICTIONS } from '../../lib/jurisdictions'
 
 const FREE_MODELS = AVAILABLE_MODELS.filter(m => m.id.endsWith(':free'))
 const PAID_MODELS  = AVAILABLE_MODELS.filter(m => !m.id.endsWith(':free'))
@@ -22,13 +15,14 @@ const BUILTIN_SKILL_INFO: Record<string, { name: string; description: string }> 
   compare_to_standard: { name: 'Compare to Standard', description: 'Compare a clause against market standard or typical commercial practice' },
 }
 
-type Section = 'appearance' | 'ai' | 'legal' | 'skills'
+type Section = 'appearance' | 'ai' | 'legal' | 'skills' | 'mcp'
 
 const NAV: { id: Section; label: string; sub: string }[] = [
   { id: 'appearance', label: 'Appearance',     sub: 'Theme' },
   { id: 'ai',         label: 'AI Provider',    sub: 'API key & model' },
   { id: 'legal',      label: 'Legal Settings', sub: 'Jurisdiction & instructions' },
   { id: 'skills',     label: 'Skills',         sub: 'Agent tools & custom skills' },
+  { id: 'mcp',        label: 'MCP Servers',    sub: 'External agent tools' },
 ]
 
 function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
@@ -45,7 +39,7 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 }
 
 export default function SettingsModal() {
-  const { settings, setSettings, setSettingsOpen, theme, setTheme } = useAppStore()
+  const { settings, setSettings, setSettingsOpen, theme, setTheme, connectMcp, mcpStatus } = useAppStore()
 
   const [section, setSection]        = useState<Section>('appearance')
   const [apiKey, setApiKey]          = useState(settings.openrouterApiKey)
@@ -54,6 +48,17 @@ export default function SettingsModal() {
   const [systemExtra, setExtra]      = useState(settings.systemPromptExtra)
   const [showKey, setShowKey]        = useState(false)
   const [saved, setSaved]            = useState(false)
+  const [baseUrl, setBaseUrl]        = useState(settings.baseUrl)
+  const [customModel, setCustomModel] = useState(settings.customModel)
+  const [tavilyKey, setTavilyKey]    = useState(settings.tavilyApiKey)
+
+  // MCP servers
+  const [mcpServers, setMcpServers]  = useState<McpServerConfig[]>(settings.mcpServers ?? [])
+  const [addingServer, setAddingServer] = useState(false)
+  const [srvName, setSrvName]        = useState('')
+  const [srvCommand, setSrvCommand]  = useState('')
+  const [srvArgs, setSrvArgs]        = useState('')
+  const [connecting, setConnecting]  = useState(false)
 
   // Skills state
   const [builtInSkills, setBuiltInSkills] = useState<BuiltInSkillSetting[]>(settings.builtInSkills)
@@ -63,7 +68,7 @@ export default function SettingsModal() {
   const [newSkillInstructions, setNewSkillInstructions] = useState('')
 
   async function save() {
-    setSettings({ openrouterApiKey: apiKey, selectedModel: model, systemPromptExtra: systemExtra, jurisdiction, builtInSkills, customSkills })
+    setSettings({ openrouterApiKey: apiKey, selectedModel: model, systemPromptExtra: systemExtra, jurisdiction, builtInSkills, customSkills, baseUrl, customModel, tavilyApiKey: tavilyKey, mcpServers })
     if (window.electronAPI) {
       await window.electronAPI.storeSet('openrouterApiKey', apiKey)
       await window.electronAPI.storeSet('selectedModel', model)
@@ -71,6 +76,10 @@ export default function SettingsModal() {
       await window.electronAPI.storeSet('jurisdiction', jurisdiction)
       await window.electronAPI.storeSet('builtInSkills', builtInSkills)
       await window.electronAPI.storeSet('customSkills', customSkills)
+      await window.electronAPI.storeSet('baseUrl', baseUrl)
+      await window.electronAPI.storeSet('customModel', customModel)
+      await window.electronAPI.storeSet('tavilyApiKey', tavilyKey)
+      await window.electronAPI.storeSet('mcpServers', mcpServers)
     }
     setSaved(true)
     setTimeout(() => { setSaved(false); setSettingsOpen(false) }, 1200)
@@ -95,6 +104,30 @@ export default function SettingsModal() {
 
   function removeCustomSkill(id: string) {
     setCustomSkills(prev => prev.filter(s => s.id !== id))
+  }
+
+  function addServer() {
+    if (!srvName.trim() || !srvCommand.trim()) return
+    const args = srvArgs.trim() ? srvArgs.trim().split(/\s+/) : []
+    setMcpServers(prev => [...prev, { id: crypto.randomUUID(), name: srvName.trim(), command: srvCommand.trim(), args, enabled: true }])
+    setSrvName(''); setSrvCommand(''); setSrvArgs(''); setAddingServer(false)
+  }
+
+  function removeServer(id: string) {
+    setMcpServers(prev => prev.filter(s => s.id !== id))
+  }
+
+  function toggleServer(id: string, enabled: boolean) {
+    setMcpServers(prev => prev.map(s => s.id === id ? { ...s, enabled } : s))
+  }
+
+  // Persist the current server list and (re)connect, loading their tools.
+  async function connectNow() {
+    setConnecting(true)
+    setSettings({ mcpServers })
+    await window.electronAPI?.storeSet('mcpServers', mcpServers)
+    await connectMcp()
+    setConnecting(false)
   }
 
   const keySet = apiKey.trim().length > 0
@@ -248,7 +281,7 @@ export default function SettingsModal() {
                         value={apiKey}
                         onChange={e => setApiKey(e.target.value)}
                         placeholder="sk-or-…"
-                        className="flex-1 bg-transparent py-3 text-sm text-c-text placeholder-c-text4 outline-none font-mono"
+                        className="flex-1 bg-transparent py-3 text-sm text-c-text placeholder-c-text4 outline-none"
                       />
                       <button
                         onClick={() => setShowKey(!showKey)}
@@ -277,6 +310,49 @@ export default function SettingsModal() {
                         {PAID_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
                       </optgroup>
                     </select>
+                  </div>
+
+                  <div>
+                    <p className="text-c-text font-semibold text-sm mb-0.5">
+                      Local / Custom Endpoint
+                      <span className="text-c-text4 font-normal ml-1.5 text-[11px]">optional</span>
+                    </p>
+                    <p className="text-c-text4 text-xs mb-3">
+                      Point to an OpenAI-compatible server (Ollama, LM Studio, self-hosted). When set, this
+                      overrides the model above and your documents never leave your machine.
+                    </p>
+                    <input
+                      value={baseUrl}
+                      onChange={e => setBaseUrl(e.target.value)}
+                      placeholder="http://localhost:11434/v1"
+                      className="w-full bg-c-input border border-c-border rounded-xl px-3 py-3 text-sm text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                    />
+                    {baseUrl.trim() && (
+                      <input
+                        value={customModel}
+                        onChange={e => setCustomModel(e.target.value)}
+                        placeholder="Model name, e.g. llama3.1"
+                        className="w-full mt-2 bg-c-input border border-c-border rounded-xl px-3 py-3 text-sm text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-c-text font-semibold text-sm mb-0.5">
+                      Web Search Key
+                      <span className="text-c-text4 font-normal ml-1.5 text-[11px]">optional</span>
+                    </p>
+                    <p className="text-c-text4 text-xs mb-3">
+                      Add a <span className="text-c-text3">Tavily</span> key for real case-law / web results.
+                      Without one, search falls back to DuckDuckGo's limited free API.
+                    </p>
+                    <input
+                      type="password"
+                      value={tavilyKey}
+                      onChange={e => setTavilyKey(e.target.value)}
+                      placeholder="tvly-…"
+                      className="w-full bg-c-input border border-c-border rounded-xl px-3 py-3 text-sm text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                    />
                   </div>
                 </>
               )}
@@ -436,6 +512,111 @@ export default function SettingsModal() {
                         </div>
                       </div>
                     )}
+                  </div>
+                </>
+              )}
+
+              {/* ── MCP Servers ─────────────────────────────── */}
+              {section === 'mcp' && (
+                <>
+                  <div>
+                    <p className="text-c-text font-semibold text-sm mb-0.5">MCP Servers</p>
+                    <p className="text-c-text4 text-xs mb-3">
+                      Connect Model Context Protocol servers to extend the agent with external tools
+                      (legal databases, clause libraries, file access, etc.). Servers run locally over stdio.
+                    </p>
+
+                    {mcpServers.length > 0 && (
+                      <div className="border border-c-border rounded-xl divide-y divide-c-border overflow-hidden mb-3">
+                        {mcpServers.map(srv => (
+                          <div key={srv.id} className="flex items-start gap-3 px-4 py-3 bg-c-surface">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-c-text">{srv.name}</p>
+                              <p className="text-xs text-c-text4 mt-0.5 truncate">
+                                {srv.command} {(srv.args ?? []).join(' ')}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <Toggle on={srv.enabled !== false} onChange={v => toggleServer(srv.id, v)} />
+                              <button
+                                onClick={() => removeServer(srv.id)}
+                                className="text-xs text-c-text4 hover:text-red-500 transition-colors"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {mcpServers.length === 0 && !addingServer && (
+                      <div className="border border-dashed border-c-border rounded-xl px-4 py-5 text-center mb-3">
+                        <p className="text-xs text-c-text4">No MCP servers configured.</p>
+                      </div>
+                    )}
+
+                    {addingServer ? (
+                      <div className="border border-c-border rounded-xl p-4 bg-c-surface space-y-2.5">
+                        <input
+                          autoFocus
+                          value={srvName}
+                          onChange={e => setSrvName(e.target.value)}
+                          placeholder="Name, e.g. filesystem"
+                          className="w-full bg-c-input border border-c-border rounded-lg px-3 py-2 text-sm text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                        />
+                        <input
+                          value={srvCommand}
+                          onChange={e => setSrvCommand(e.target.value)}
+                          placeholder="Command, e.g. npx"
+                          className="w-full bg-c-input border border-c-border rounded-lg px-3 py-2 text-sm text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                        />
+                        <input
+                          value={srvArgs}
+                          onChange={e => setSrvArgs(e.target.value)}
+                          placeholder="Arguments, e.g. -y @modelcontextprotocol/server-filesystem /docs"
+                          className="w-full bg-c-input border border-c-border rounded-lg px-3 py-2 text-sm text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                        />
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => { setAddingServer(false); setSrvName(''); setSrvCommand(''); setSrvArgs('') }}
+                            className="px-3 py-1.5 text-xs text-c-text3 hover:text-c-text transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={addServer}
+                            disabled={!srvName.trim() || !srvCommand.trim()}
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-c-text text-c-bg hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                          >
+                            Add server
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setAddingServer(true)}
+                        className="text-[11px] text-blue-500 hover:text-blue-400 transition-colors font-medium"
+                      >
+                        + Add server
+                      </button>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={connectNow}
+                        disabled={connecting}
+                        className="px-4 py-2 rounded-xl text-sm font-medium bg-c-text text-c-bg hover:opacity-80 disabled:opacity-40 transition-all"
+                      >
+                        {connecting ? 'Connecting…' : 'Connect / Refresh'}
+                      </button>
+                      {mcpStatus && <p className="text-[11px] text-c-text4">{mcpStatus}</p>}
+                    </div>
+                    <p className="text-[11px] text-c-text4 mt-2">
+                      Connected tools become available to the agent in Document Chat.
+                    </p>
                   </div>
                 </>
               )}
