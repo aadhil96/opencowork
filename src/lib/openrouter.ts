@@ -217,12 +217,13 @@ export async function streamChatCompletion(
     const canUseTools = tools.length > 0 && !!callbacks.onToolCall
 
     // Agentic loop: keep streaming until the model answers without requesting a tool.
+    let answered = false
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const { toolCalls, error } = await streamOnce(
         apiKey, model, baseUrl, apiMessages, canUseTools ? tools : [], callbacks.onChunk, options?.signal
       )
       if (error) { callbacks.onError(error); return }
-      if (toolCalls.length === 0 || !callbacks.onToolCall) break
+      if (toolCalls.length === 0 || !callbacks.onToolCall) { answered = true; break }
 
       // Record the assistant's tool request, then run each tool and append its result.
       apiMessages.push({
@@ -239,6 +240,16 @@ export async function streamChatCompletion(
         const result = await callbacks.onToolCall(tc.name, parsed)
         apiMessages.push({ role: 'tool', content: result, tool_call_id: tc.id })
       }
+    }
+
+    // If we exhausted the tool-round budget while the model was still calling
+    // tools, force one final pass WITHOUT tools so it synthesizes an actual
+    // answer instead of ending on an empty, tool-only turn.
+    if (!answered) {
+      const { error } = await streamOnce(
+        apiKey, model, baseUrl, apiMessages, [], callbacks.onChunk, options?.signal
+      )
+      if (error) { callbacks.onError(error); return }
     }
 
     callbacks.onDone()

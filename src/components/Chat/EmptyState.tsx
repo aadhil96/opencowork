@@ -2,7 +2,8 @@ import { useAppStore } from '../../lib/store'
 import type { PanelMode, Document } from '../../types'
 import { streamChatCompletion, resolveModel } from '../../lib/openrouter'
 import { maybeGenerateSessionTitle } from '../../lib/titles'
-import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, executeAgentTool, detectSubAgent } from '../../lib/agent'
+import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, resolveSubAgentId } from '../../lib/agent'
+import { makeTrackedToolCall } from '../../lib/toolActivity'
 
 const RESEARCH_STARTERS = [
   'What is a standard liability cap in SaaS contracts?',
@@ -63,7 +64,7 @@ function DocumentInfoCard({
 
   return (
     <div className="w-full max-w-xl mx-auto mb-3 animate-fade-in">
-      <div className="bg-c-surface border border-c-border rounded-2xl overflow-hidden">
+      <div className="bg-c-surface border border-c-border rounded-xl overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3.5">
           <DocTypeBadge ext={doc.ext} />
           <div className="flex-1 min-w-0">
@@ -181,10 +182,11 @@ function StarterCard({ question, mode }: { question: string; mode: PanelMode }) 
     const controller = new AbortController()
     startStreaming(controller)
 
-    const autoAgentId = mode === 'chat' ? detectSubAgent(question, docs.map(d => d.name).join(' ')) : undefined
+    const agentId = mode === 'chat' ? resolveSubAgentId(settings.activeSubAgentId, question, docs.map(d => d.name).join(' ')) : undefined
     const activeProject = getActiveProject()
+    const activePlaybook = settings.playbooks?.find(p => p.id === settings.activePlaybookId) ?? null
     const systemPrompt = mode === 'chat'
-      ? buildChatSystemPrompt(docs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, autoAgentId, activeProject?.instructions, activeProject?.name)
+      ? buildChatSystemPrompt(docs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, agentId, activeProject?.instructions, activeProject?.name, activePlaybook)
       : buildResearchSystemPrompt(settings.jurisdiction, settings.systemPromptExtra)
 
     const { model, baseUrl } = resolveModel(settings)
@@ -196,7 +198,7 @@ function StarterCard({ question, mode }: { question: string; mode: PanelMode }) 
       mode === 'chat' ? getActiveTools(settings, mcpTools) : [],
       {
         onChunk: (chunk: string) => appendToLastMessage(chunk),
-        onToolCall: async (name: string, input: Record<string, unknown>) => executeAgentTool(name, input, docs),
+        onToolCall: makeTrackedToolCall(docs),
         onDone: () => setStreaming(false),
         onError: (err: string) => { appendToLastMessage(`\n\n> *Error: ${err}*`); setStreaming(false) }
       },

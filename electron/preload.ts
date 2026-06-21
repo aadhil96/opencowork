@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   webSearch: (query: string) => ipcRenderer.invoke('web-search', query),
   legalSearch: (query: string, court?: string) => ipcRenderer.invoke('legal-search', query, court),
   verifyCitation: (citation: string) => ipcRenderer.invoke('verify-citation', citation),
-  exportDocument: (args: { defaultName: string; format: 'docx' | 'md' | 'txt'; content: string }) =>
+  exportDocument: (args: { defaultName: string; format: 'docx' | 'pptx' | 'md' | 'txt'; content: string }) =>
     ipcRenderer.invoke('export-document', args),
   mcpConnect: (configs: unknown) => ipcRenderer.invoke('mcp-connect', configs),
   mcpCallTool: (server: string, name: string, args: Record<string, unknown>) =>

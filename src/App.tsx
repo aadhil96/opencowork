@@ -26,7 +26,7 @@ declare global {
       webSearch: (query: string) => Promise<string>
       legalSearch: (query: string, court?: string) => Promise<string>
       verifyCitation: (citation: string) => Promise<string>
-      exportDocument: (args: { defaultName: string; format: 'docx' | 'md' | 'txt'; content: string }) =>
+      exportDocument: (args: { defaultName: string; format: 'docx' | 'pptx' | 'md' | 'txt'; content: string }) =>
         Promise<{ path: string } | { canceled: true } | { error: string }>
       mcpConnect: (configs: import('./types').McpServerConfig[]) =>
         Promise<{ tools: import('./types').McpToolInfo[]; error?: string }>
@@ -65,15 +65,18 @@ export default function App() {
       const savedTheme      = ((await window.electronAPI.storeGet('theme')) as string) || 'light'
       const builtInSkills    = (await window.electronAPI.storeGet('builtInSkills'))    as import('./types').BuiltInSkillSetting[] | null
       const customSkills     = (await window.electronAPI.storeGet('customSkills'))     as import('./types').CustomSkill[] | null
-      const activeSubAgentId = ((await window.electronAPI.storeGet('activeSubAgentId')) as string) || 'general_counsel'
+      const activeSubAgentId = ((await window.electronAPI.storeGet('activeSubAgentId')) as string) || 'auto'
       const baseUrl         = ((await window.electronAPI.storeGet('baseUrl')) as string)         || ''
       const customModel     = ((await window.electronAPI.storeGet('customModel')) as string)     || ''
       const tavilyApiKey    = ((await window.electronAPI.storeGet('tavilyApiKey')) as string)    || ''
       const mcpServers      = (await window.electronAPI.storeGet('mcpServers')) as import('./types').McpServerConfig[] | null
+      const playbooks       = (await window.electronAPI.storeGet('playbooks')) as import('./types').Playbook[] | null
+      const activePlaybookId = ((await window.electronAPI.storeGet('activePlaybookId')) as string) || ''
       setSettings({
         openrouterApiKey: apiKey, selectedModel, systemPromptExtra, jurisdiction, activeSubAgentId,
-        baseUrl, customModel, tavilyApiKey,
+        baseUrl, customModel, tavilyApiKey, activePlaybookId,
         ...(mcpServers ? { mcpServers } : {}),
+        ...(playbooks ? { playbooks } : {}),
         ...(builtInSkills ? { builtInSkills } : {}),
         ...(customSkills  ? { customSkills  } : {}),
       })

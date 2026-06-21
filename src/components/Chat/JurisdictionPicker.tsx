@@ -62,7 +62,7 @@ export default function JurisdictionPicker() {
                   key={opt}
                   onClick={() => choose(opt)}
                   className={`w-full text-left px-3 py-1.5 text-[12px] transition-colors ${
-                    opt === current ? 'bg-blue-500/10 text-blue-500 font-medium' : 'text-c-text2 hover:bg-c-elevated'
+                    opt === current ? 'bg-accent text-primary font-medium' : 'text-c-text2 hover:bg-c-elevated'
                   }`}
                 >
                   {opt}

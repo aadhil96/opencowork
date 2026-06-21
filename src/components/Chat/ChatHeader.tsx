@@ -53,7 +53,7 @@ export default function ChatHeader() {
               onClick={() => setShowDocPanel(!showDocPanel)}
               className={`px-2.5 py-1.5 rounded-lg text-xs transition-colors flex-shrink-0 ${
                 showDocPanel
-                  ? 'text-blue-500 bg-c-elevated'
+                  ? 'text-primary bg-c-elevated'
                   : 'text-c-text3 hover:bg-c-elevated'
               }`}
             >

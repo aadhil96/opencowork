@@ -1,4 +1,4 @@
-import type { AgentTool, Document, McpToolInfo, RiskFlag, Settings, SubAgent } from '../types'
+import type { AgentTool, Document, McpToolInfo, Playbook, RiskFlag, Settings, SubAgent } from '../types'
 
 export const SUB_AGENTS: SubAgent[] = [
   {
@@ -205,6 +205,13 @@ export const SUB_AGENTS: SubAgent[] = [
 
 export function getSubAgent(id: string): SubAgent {
   return SUB_AGENTS.find(a => a.id === id) ?? SUB_AGENTS[0]
+}
+
+// Decide which specialist handles a turn: an explicit user choice wins; 'auto'
+// (or unset) falls back to keyword routing.
+export function resolveSubAgentId(activeSubAgentId: string | undefined, message: string, docName?: string): string {
+  if (activeSubAgentId && activeSubAgentId !== 'auto') return activeSubAgentId
+  return detectSubAgent(message, docName)
 }
 
 // Auto-route to the best sub-agent based on message content + document name
@@ -662,13 +669,31 @@ function buildDocSection(documents: Document[]): string {
     '\n\nAnswer questions about the document text above accurately, citing specific sections (and the document name when more than one is loaded).'
 }
 
-export function buildChatSystemPrompt(documents: Document[], jurisdiction: string, extra: string, customSkills?: Settings['customSkills'], subAgentId?: string, projectInstructions?: string, projectName?: string): string {
+function buildPlaybookSection(playbook?: Playbook | null): string {
+  if (!playbook || playbook.rules.length === 0) return ''
+  const rules = playbook.rules
+    .map((r, i) => `${i + 1}. **${r.clause}** — ${r.position}`)
+    .join('\n')
+  return `## Active Playbook: ${playbook.name}
+Review the document against the firm's negotiation positions below. For each position, state whether the contract **Complies**, **Deviates**, or is **Silent**, quote the relevant clause text, and propose a redline to bring it in line. Prioritize deviations by risk.
+${rules}
+`
+}
+
+export function buildChatSystemPrompt(documents: Document[], jurisdiction: string, extra: string, customSkills?: Settings['customSkills'], subAgentId?: string, projectInstructions?: string, projectName?: string, playbook?: Playbook | null): string {
   const agent = getSubAgent(subAgentId ?? 'general_counsel')
   const docSection = documents.length > 0
     ? buildDocSection(documents)
     : 'No document is currently loaded. Ask the user to attach a document using the paperclip button.'
   const base = `You are OpenCowork — acting as **${agent.name}** (${agent.role}). You help lawyers, paralegals, and business professionals review contracts and legal documents.
 ${agent.systemPrompt ? `\n## Specialist Mode: ${agent.name}\n${agent.systemPrompt}\n` : ''}
+
+## Response style
+Match the length and depth of your answer to what was asked — this governs the specialist instructions above.
+- Greetings, casual, or simple factual questions: reply in 1–3 sentences, no headings, no tables.
+- Conceptual questions ("what is X?"): a short, direct explanation; add structure only if it genuinely helps.
+- Reserve full structured analysis (headings, tables, risk registers, clause-by-clause breakdowns) for actual document review or when the user explicitly asks for a detailed/comprehensive analysis.
+Never pad, never restate the question, and don't add sections the user didn't ask for. Be concise by default.
 
 ## Jurisdiction
 This analysis operates under **${jurisdiction}** law and legal standards. Apply the relevant statutory framework, regulatory requirements, and common legal practices specific to this jurisdiction. Where a clause would be interpreted differently in other jurisdictions, note it briefly.
@@ -681,8 +706,11 @@ ${docSection}
 - Compare terms to market standards in ${jurisdiction}
 - Explain legal concepts in plain language
 - Use available tools to perform structured analysis
+- **Draft documents** (contracts, memos, letters): produce the complete text with clear "#"/"##" headings — the user can export it to Word (.docx). Note AI drafts are first drafts requiring lawyer review.
+- **Build slide decks**: when asked for a presentation/deck, structure the reply as slides — one "##" heading per slide followed by concise bullet points — so it exports cleanly to PowerPoint (.pptx).
 
 ${projectInstructions ? `## Project: ${projectName ?? 'Current'}\nThe user is working within a project with the following standing instructions — apply them throughout:\n${projectInstructions}` : ''}
+${buildPlaybookSection(playbook)}
 ${extra ? `## Additional instructions:\n${extra}` : ''}
 ${customSkills && customSkills.length > 0 ? `## Custom Skills\nThe user has configured these additional capabilities — apply them when relevant:\n${customSkills.map(s => `- **${s.name}**: ${s.instructions}`).join('\n')}` : ''}`
   return base

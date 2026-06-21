@@ -3,11 +3,12 @@ import { useAppStore } from '../lib/store'
 import type { Session } from '../lib/store'
 import { streamChatCompletion, resolveModel } from '../lib/openrouter'
 import { maybeGenerateSessionTitle } from '../lib/titles'
-import { getActiveTools, buildChatSystemPrompt, executeAgentTool } from '../lib/agent'
+import { getActiveTools, buildChatSystemPrompt, resolveSubAgentId } from '../lib/agent'
+import { makeTrackedToolCall } from '../lib/toolActivity'
 import type { Message, BuiltInSkillSetting, CustomSkill } from '../types'
 
 const BUILTIN_SKILL_META: Record<string, { name: string; description: string; accent: string; prompt: string | null }> = {
-  extract_clauses:     { name: 'Extract Clauses',     description: 'Pull out clause types by category',       accent: 'bg-blue-500',    prompt: 'Extract and list all key clauses from this document, organized by type.' },
+  extract_clauses:     { name: 'Extract Clauses',     description: 'Pull out clause types by category',       accent: 'bg-primary',    prompt: 'Extract and list all key clauses from this document, organized by type.' },
   identify_risks:      { name: 'Identify Risks',      description: 'Flag risky or unusual clauses',           accent: 'bg-red-500',     prompt: 'Identify all risks and flag any concerning clauses in this document.' },
   summarize_document:  { name: 'Summarize',           description: 'Generate executive summary',              accent: 'bg-emerald-500', prompt: 'Generate a complete structured summary of this document including parties, obligations, and key dates.' },
   search_document:     { name: 'Search Document',     description: 'Find a specific term or concept',         accent: 'bg-violet-500',  prompt: null },
@@ -72,77 +73,88 @@ function SkillsFlyout({ onClose, onRun }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm no-drag"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 no-drag"
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="bg-c-bg border border-c-border rounded-xl w-full max-w-[420px] shadow-xl animate-fade-in flex flex-col overflow-hidden"
+        className="bg-c-bg border border-c-border rounded-lg w-full max-w-[420px] shadow-lg animate-fade-in flex flex-col overflow-hidden"
         style={{ maxHeight: '75vh' }}
       >
-        {/* Header — single line, minimal */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-c-border flex-shrink-0">
-          <p className="text-sm font-semibold text-c-text">Skills</p>
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-c-border flex-shrink-0">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold leading-none tracking-tight text-c-text">Skills</h2>
+            <p className="text-sm text-muted-foreground">Run a tool on the attached document, or add your own.</p>
+          </div>
           <button
             onClick={onClose}
-            className="w-6 h-6 flex items-center justify-center rounded-md text-c-text4 hover:text-c-text2 hover:bg-c-elevated text-base leading-none transition-colors"
+            aria-label="Close"
+            className="rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 text-c-text"
           >
-            ×
+            <CloseIcon />
           </button>
         </div>
 
-        {/* No-doc hint — compact inline strip */}
+        {/* Document-required notice — shadcn alert */}
         {!hasDoc && (
-          <div className="px-4 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-900/30 flex-shrink-0">
-            <p className="text-[11px] text-amber-700 dark:text-amber-400">
-              Attach a document to run skills.
+          <div className="mx-4 mt-3 flex items-start gap-2.5 rounded-lg border border-c-border bg-muted/40 px-3 py-2.5">
+            <span className="mt-px flex-shrink-0 text-muted-foreground"><InfoIcon /></span>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Attach a document to run skills. You can still enable or disable them below.
             </p>
           </div>
         )}
 
-        {/* Scrollable body — tight padding, compact rows */}
-        <div className="flex-1 overflow-y-auto px-3 py-2">
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-2 py-2">
 
-          {/* Built-in section */}
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-c-text4 px-1 py-2">Built-in</p>
+          {/* Built-in skills */}
+          <p className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">Built-in</p>
           <div className="space-y-0.5">
             {builtIns.map(skill => {
               const meta = BUILTIN_SKILL_META[skill.id]
               if (!meta) return null
               const isInputSkill = meta.prompt === null
               const showInput = activeInputSkillId === skill.id
-              const disabled = !skill.enabled
-              const canRun = hasDoc && !disabled
+              const canRun = hasDoc && skill.enabled
 
               return (
                 <div key={skill.id}>
-                  <div className={`flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-c-elevated/60 transition-colors ${disabled ? 'opacity-50' : ''}`}>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[13px] font-medium text-c-text truncate">{meta.name}</p>
-                      <p className="text-[11px] text-c-text4 truncate">{meta.description}</p>
+                  <div
+                    onClick={() => {
+                      if (!canRun) return
+                      if (isInputSkill) {
+                        setActiveInputSkillId(showInput ? null : skill.id)
+                        setActiveInputValue('')
+                      } else {
+                        onRun(meta.prompt!)
+                        onClose()
+                      }
+                    }}
+                    title={!hasDoc ? 'Attach a document first' : !skill.enabled ? 'Enable this skill to run it' : ''}
+                    className={`group flex items-center gap-3 rounded-md px-2.5 py-2 transition-colors ${
+                      canRun ? 'cursor-pointer hover:bg-accent' : 'opacity-55'
+                    }`}
+                  >
+                    <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                      <SkillIcon id={skill.id} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-c-text">{meta.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">{meta.description}</p>
                     </div>
-                    <button
-                      onClick={() => {
-                        if (!canRun) return
-                        if (isInputSkill) {
-                          setActiveInputSkillId(showInput ? null : skill.id)
-                          setActiveInputValue('')
-                        } else {
-                          onRun(meta.prompt!)
-                          onClose()
-                        }
-                      }}
-                      disabled={!canRun}
-                      title={!hasDoc ? 'Attach a document first' : disabled ? 'Disabled' : ''}
-                      className="px-2 py-1 rounded text-[11px] font-medium text-blue-500 hover:bg-blue-500/10 disabled:text-c-text4 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isInputSkill && showInput ? 'Close' : 'Run'}
-                    </button>
+                    {canRun && (
+                      <span className="flex flex-shrink-0 items-center gap-0.5 text-xs font-medium text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+                        {isInputSkill ? (showInput ? 'Close' : 'Search') : 'Run'}
+                        <ChevronRightIcon />
+                      </span>
+                    )}
                     <Toggle on={skill.enabled} onChange={() => toggleBuiltIn(skill.id)} />
                   </div>
 
-                  {/* Inline input for skills that need an argument */}
+                  {/* Inline input for skills that take an argument */}
                   {isInputSkill && showInput && (
-                    <div className="px-2 pb-2 flex gap-1.5">
+                    <div className="flex gap-2 px-2.5 pb-2 pt-1 pl-[3.25rem]">
                       <input
                         autoFocus
                         value={activeInputValue}
@@ -152,12 +164,12 @@ function SkillsFlyout({ onClose, onRun }: {
                           if (e.key === 'Escape') setActiveInputSkillId(null)
                         }}
                         placeholder="Enter search term…"
-                        className="flex-1 bg-c-input border border-c-border rounded-md px-2.5 py-1.5 text-[12px] text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                        className="h-8 flex-1 rounded-md border border-input bg-transparent px-3 text-sm text-c-text placeholder-c-text4 outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                       />
                       <button
                         onClick={runSkillSearch}
                         disabled={!activeInputValue.trim() || !hasDoc}
-                        className="px-3 rounded-md text-[11px] font-medium bg-c-text text-c-bg hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                        className="inline-flex h-8 flex-shrink-0 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
                         Search
                       </button>
@@ -168,49 +180,49 @@ function SkillsFlyout({ onClose, onRun }: {
             })}
           </div>
 
-          {/* Custom section */}
-          <div className="flex items-center justify-between px-1 pt-3 pb-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-c-text4">Custom</p>
+          {/* Custom skills */}
+          <div className="flex items-center justify-between px-2 pb-1 pt-4">
+            <p className="text-xs font-medium text-muted-foreground">Custom</p>
             {!adding && (
               <button
                 onClick={() => setAdding(true)}
-                className="text-[11px] text-blue-500 hover:text-blue-400 font-medium transition-colors"
+                className="inline-flex items-center gap-1 text-xs font-medium text-c-text2 hover:text-c-text transition-colors"
               >
-                + Add
+                <PlusMiniIcon /> Add
               </button>
             )}
           </div>
 
-          {/* Add form — compact */}
+          {/* Add form */}
           {adding && (
-            <div className="border border-c-border rounded-lg bg-c-surface p-2.5 space-y-2 mb-1 animate-fade-in">
+            <div className="mx-1 mb-1 space-y-2 rounded-lg border border-c-border bg-c-surface p-3 animate-fade-in">
               <input
                 autoFocus
                 value={newName}
                 onChange={e => setNewName(e.target.value)}
                 placeholder="Skill name"
-                className="w-full bg-c-input border border-c-border rounded-md px-2.5 py-1.5 text-[12px] text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-c-text placeholder-c-text4 outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
               />
               <textarea
                 value={newInstructions}
                 onChange={e => setNewInstructions(e.target.value)}
                 placeholder="Instructions for the agent…"
-                rows={2}
-                className="w-full bg-c-input border border-c-border rounded-md px-2.5 py-1.5 text-[12px] text-c-text placeholder-c-text4 outline-none focus:border-c-text4 resize-none transition-colors leading-relaxed"
+                rows={3}
+                className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm text-c-text placeholder-c-text4 outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none transition-colors leading-relaxed"
               />
-              <div className="flex justify-end gap-1.5">
+              <div className="flex justify-end gap-2">
                 <button
                   onClick={() => { setAdding(false); setNewName(''); setNewInstructions('') }}
-                  className="px-2.5 py-1 text-[11px] text-c-text3 hover:text-c-text rounded transition-colors"
+                  className="inline-flex h-8 items-center rounded-md px-3 text-xs font-medium text-c-text3 hover:bg-accent hover:text-c-text transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={addCustom}
                   disabled={!newName.trim() || !newInstructions.trim()}
-                  className="px-2.5 py-1 rounded text-[11px] font-medium bg-c-text text-c-bg hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
-                  Add
+                  Add skill
                 </button>
               </div>
             </div>
@@ -222,49 +234,53 @@ function SkillsFlyout({ onClose, onRun }: {
               {customs.map(skill => (
                 <div
                   key={skill.id}
-                  className="group flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-c-elevated/60 transition-colors"
+                  onClick={() => {
+                    if (!hasDoc) return
+                    onRun(`Apply the "${skill.name}" skill: ${skill.instructions}`)
+                    onClose()
+                  }}
+                  title={!hasDoc ? 'Attach a document first' : ''}
+                  className={`group flex items-center gap-3 rounded-md px-2.5 py-2 transition-colors ${
+                    hasDoc ? 'cursor-pointer hover:bg-accent' : 'opacity-55'
+                  }`}
                 >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-medium text-c-text truncate">{skill.name}</p>
-                    <p className="text-[11px] text-c-text4 truncate">{skill.instructions}</p>
+                  <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                    <SparkleIcon />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-c-text">{skill.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">{skill.instructions}</p>
                   </div>
+                  {hasDoc && (
+                    <span className="flex flex-shrink-0 items-center gap-0.5 text-xs font-medium text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+                      Run<ChevronRightIcon />
+                    </span>
+                  )}
                   <button
-                    onClick={() => {
-                      if (!hasDoc) return
-                      onRun(`Apply the "${skill.name}" skill: ${skill.instructions}`)
-                      onClose()
-                    }}
-                    disabled={!hasDoc}
-                    title={!hasDoc ? 'Attach a document first' : ''}
-                    className="px-2 py-1 rounded text-[11px] font-medium text-blue-500 hover:bg-blue-500/10 disabled:text-c-text4 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
-                  >
-                    Run
-                  </button>
-                  <button
-                    onClick={() => removeCustom(skill.id)}
+                    onClick={e => { e.stopPropagation(); removeCustom(skill.id) }}
                     title="Remove skill"
-                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-c-text4 hover:text-red-500 transition-all"
+                    className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
                   >
-                    ×
+                    <CloseIcon />
                   </button>
                 </div>
               ))}
             </div>
           ) : !adding && (
-            <p className="text-[11px] text-c-text4 px-2 py-3 text-center">No custom skills yet.</p>
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">No custom skills yet.</p>
           )}
         </div>
 
-        {/* Footer — minimal */}
-        <div className="px-4 py-2 border-t border-c-border flex-shrink-0 flex items-center justify-between">
-          <p className="text-[10px] text-c-text4">
+        {/* Footer */}
+        <div className="flex flex-shrink-0 items-center justify-between border-t border-c-border px-5 py-3">
+          <p className="text-xs text-muted-foreground">
             {enabledBuiltIn}/{builtIns.length} active · {customs.length} custom
           </p>
           <button
             onClick={() => { onClose(); setSettingsOpen(true) }}
-            className="text-[10px] text-c-text3 hover:text-c-text2 transition-colors"
+            className="inline-flex items-center gap-1 text-xs font-medium text-c-text3 hover:text-c-text transition-colors"
           >
-            Settings →
+            Settings <ChevronRightIcon />
           </button>
         </div>
       </div>
@@ -272,14 +288,84 @@ function SkillsFlyout({ onClose, onRun }: {
   )
 }
 
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
+// ── Skill icons (lucide-style, 16px, monochrome) ────────────────────────────
+function iconProps(size = 16) {
+  return { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
+}
+
+function InfoIcon() {
+  return (
+    <svg {...iconProps(15)}>
+      <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+  )
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg {...iconProps(13)}><polyline points="9 18 15 12 9 6" /></svg>
+  )
+}
+
+function PlusMiniIcon() {
+  return (
+    <svg {...iconProps(13)}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+  )
+}
+
+function SparkleIcon() {
+  return (
+    <svg {...iconProps(15)}><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" /></svg>
+  )
+}
+
+function EditIcon() {
+  return (
+    <svg {...iconProps(14)}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg {...iconProps(14)}><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+  )
+}
+
+function SkillIcon({ id }: { id: string }) {
+  switch (id) {
+    case 'extract_clauses':
+      return <svg {...iconProps(15)}><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect x="9" y="3" width="6" height="4" rx="1" /><line x1="9" y1="12" x2="15" y2="12" /><line x1="9" y1="16" x2="13" y2="16" /></svg>
+    case 'identify_risks':
+      return <svg {...iconProps(15)}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+    case 'summarize_document':
+      return <svg {...iconProps(15)}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="16" y2="17" /></svg>
+    case 'search_document':
+      return <svg {...iconProps(15)}><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.5" y2="16.5" /></svg>
+    case 'compare_to_standard':
+      return <svg {...iconProps(15)}><line x1="12" y1="3" x2="12" y2="21" /><path d="M5 7l-3 6h6l-3-6z" /><path d="M19 7l-3 6h6l-3-6z" /><line x1="8" y1="21" x2="16" y2="21" /></svg>
+    default:
+      return <SparkleIcon />
+  }
+}
+
 function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
   return (
     <button
+      role="switch"
+      aria-checked={on}
       onClick={e => { e.stopPropagation(); onChange() }}
       title={on ? 'Enabled' : 'Disabled'}
-      className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${on ? 'bg-blue-500' : 'bg-c-border'}`}
+      className={`relative inline-flex w-9 h-5 items-center rounded-full transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${on ? 'bg-primary' : 'bg-input'}`}
     >
-      <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${on ? 'translate-x-4' : ''}`} />
+      <span className={`pointer-events-none block w-4 h-4 bg-background rounded-full shadow-sm transition-transform ${on ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
     </button>
   )
 }
@@ -288,14 +374,13 @@ function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
 
 export default function Sidebar() {
   const {
-    sessions, activeSessionId, createSession, deleteSession,
+    sessions, activeSessionId, createSession, deleteSession, renameSession,
     setActiveSession, setSettingsOpen, settings,
     theme, setTheme, isStreaming, addMessage, appendToLastMessage,
     setStreaming, startStreaming, getActiveDocument, getActiveDocuments, activeMessages, panelMode, mcpTools, activeSession,
     projects, activeProjectId, createProject, setActiveProject, renameProject, deleteProject, getActiveProject
   } = useAppStore()
 
-  const [hoveredId, setHoveredId]       = useState<string | null>(null)
   const [skillsOpen, setSkillsOpen]     = useState(false)
   const [creatingProject, setCreatingProject] = useState(false)
   const [newProjectName, setNewProjectName]   = useState('')
@@ -324,7 +409,9 @@ export default function Sidebar() {
     const controller = new AbortController()
     startStreaming(controller)
     const activeProject = getActiveProject()
-    const systemPrompt = buildChatSystemPrompt(docs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, undefined, activeProject?.instructions, activeProject?.name)
+    const agentId = resolveSubAgentId(settings.activeSubAgentId, prompt, docs.map(d => d.name).join(' '))
+    const activePlaybook = settings.playbooks?.find(p => p.id === settings.activePlaybookId) ?? null
+    const systemPrompt = buildChatSystemPrompt(docs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, agentId, activeProject?.instructions, activeProject?.name, activePlaybook)
     const { model, baseUrl } = resolveModel(settings)
     await streamChatCompletion(
       settings.openrouterApiKey,
@@ -334,7 +421,7 @@ export default function Sidebar() {
       getActiveTools(settings, mcpTools),
       {
         onChunk: c => appendToLastMessage(c),
-        onToolCall: async (name, input) => executeAgentTool(name, input, docs),
+        onToolCall: makeTrackedToolCall(docs),
         onDone: () => setStreaming(false),
         onError: err => { appendToLastMessage(`\n\n> *Error: ${err}*`); setStreaming(false) }
       },
@@ -382,7 +469,7 @@ export default function Sidebar() {
               }}
               onBlur={() => { if (!newProjectName.trim()) setCreatingProject(false) }}
               placeholder="Project name…"
-              className="w-full bg-c-input border border-c-border rounded-lg px-2.5 py-1.5 text-xs text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+              className="w-full border border-input bg-transparent rounded-md px-2.5 py-1.5 text-xs text-c-text placeholder-c-text4 outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
             />
           </div>
         )}
@@ -436,26 +523,33 @@ export default function Sidebar() {
                         if (v) renameProject(p.id, v)
                         setRenamingProjectId(null)
                       }}
-                      className="flex-1 min-w-0 bg-c-input border border-c-border rounded px-1.5 py-0.5 text-[12px] outline-none focus:border-c-text4"
+                      className="h-7 flex-1 min-w-0 border border-input bg-transparent rounded-md px-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                   ) : (
                     <>
-                      <span className="flex-1 min-w-0 text-[13px] truncate">{p.name}</span>
-                      <span className="text-[10px] text-c-text4">{count}</span>
-                      <button
-                        onClick={e => { e.stopPropagation(); setRenamingProjectId(p.id) }}
-                        title="Rename"
-                        className="opacity-0 group-hover:opacity-100 text-[10px] text-c-text4 hover:text-c-text3 px-1 transition-opacity"
-                      >
-                        ✎
-                      </button>
-                      <button
-                        onClick={e => { e.stopPropagation(); if (confirm(`Delete project "${p.name}"? Its sessions will become ungrouped.`)) deleteProject(p.id) }}
-                        title="Delete project"
-                        className="opacity-0 group-hover:opacity-100 text-[10px] text-c-text4 hover:text-red-500 px-1 transition-opacity"
-                      >
-                        ×
-                      </button>
+                      <span className="flex-1 min-w-0 text-sm truncate">{p.name}</span>
+                      <div className="ml-auto flex items-center">
+                        {/* Session count by default; clear action buttons on hover */}
+                        <span className="px-1 text-[11px] tabular-nums text-c-text4 group-hover:hidden">{count}</span>
+                        <div className="hidden items-center gap-0.5 group-hover:flex">
+                          <button
+                            onClick={e => { e.stopPropagation(); setRenamingProjectId(p.id) }}
+                            title="Rename project"
+                            aria-label="Rename project"
+                            className="flex h-6 w-6 items-center justify-center rounded-md text-c-text3 hover:bg-accent hover:text-c-text transition-colors"
+                          >
+                            <EditIcon />
+                          </button>
+                          <button
+                            onClick={e => { e.stopPropagation(); if (confirm(`Delete project "${p.name}"? Its sessions will become ungrouped (not deleted).`)) deleteProject(p.id) }}
+                            title="Delete project"
+                            aria-label="Delete project"
+                            className="flex h-6 w-6 items-center justify-center rounded-md text-c-text3 hover:bg-destructive/10 hover:text-destructive transition-colors"
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
+                      </div>
                     </>
                   )}
                 </div>
@@ -483,11 +577,9 @@ export default function Sidebar() {
                   key={session.id}
                   session={session}
                   isActive={session.id === activeSessionId}
-                  isHovered={hoveredId === session.id}
                   onSelect={() => setActiveSession(session.id)}
+                  onRename={(name) => renameSession(session.id, name)}
                   onDelete={() => deleteSession(session.id)}
-                  onMouseEnter={() => setHoveredId(session.id)}
-                  onMouseLeave={() => setHoveredId(null)}
                 />
               ))}
             </>
@@ -574,34 +666,67 @@ function InboxIcon() {
 }
 
 function SessionItem({
-  session, isActive, isHovered, onSelect, onDelete, onMouseEnter, onMouseLeave
+  session, isActive, onSelect, onRename, onDelete
 }: {
   session: Session
   isActive: boolean
-  isHovered: boolean
   onSelect: () => void
+  onRename: (name: string) => void
   onDelete: () => void
-  onMouseEnter: () => void
-  onMouseLeave: () => void
 }) {
+  const [editing, setEditing] = useState(false)
+
+  const rowClass = `group flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+    isActive ? 'bg-c-elevated text-c-text' : 'text-c-text2 hover:bg-c-surface'
+  }`
+
+  if (editing) {
+    return (
+      <div className={rowClass}>
+        <input
+          autoFocus
+          defaultValue={session.name}
+          onClick={e => e.stopPropagation()}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              const v = (e.target as HTMLInputElement).value.trim()
+              if (v) onRename(v)
+              setEditing(false)
+            }
+            if (e.key === 'Escape') setEditing(false)
+          }}
+          onBlur={e => {
+            const v = e.target.value.trim()
+            if (v) onRename(v)
+            setEditing(false)
+          }}
+          className="h-7 flex-1 min-w-0 border border-input bg-transparent rounded-md px-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+      </div>
+    )
+  }
+
   return (
-    <div
-      className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-        isActive ? 'bg-c-elevated text-c-text' : 'text-c-text2 hover:bg-c-surface'
-      }`}
-      onClick={onSelect}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-    >
+    <div className={`${rowClass} cursor-pointer`} onClick={onSelect}>
       <span className="flex-1 min-w-0 text-sm truncate">{session.name}</span>
-      {(isHovered || isActive) && (
+      <div className="ml-auto hidden flex-shrink-0 items-center gap-0.5 group-hover:flex">
         <button
-          onClick={e => { e.stopPropagation(); onDelete() }}
-          className="flex-shrink-0 text-xs text-c-text3 hover:text-red-500 transition-colors px-1"
+          onClick={e => { e.stopPropagation(); setEditing(true) }}
+          title="Rename chat"
+          aria-label="Rename chat"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-c-text3 hover:bg-accent hover:text-c-text transition-colors"
         >
-          ×
+          <EditIcon />
         </button>
-      )}
+        <button
+          onClick={e => { e.stopPropagation(); if (confirm(`Delete chat "${session.name}"?`)) onDelete() }}
+          title="Delete chat"
+          aria-label="Delete chat"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-c-text3 hover:bg-destructive/10 hover:text-destructive transition-colors"
+        >
+          <TrashIcon />
+        </button>
+      </div>
     </div>
   )
 }

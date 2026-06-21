@@ -11,12 +11,33 @@ export interface Document {
   loadedAt: number
 }
 
+// A single source surfaced by a web/legal search, shown as a Perplexity-style card.
+export interface SearchSource {
+  title: string
+  url: string
+  snippet?: string
+}
+
+// One search the agent ran during a turn (web_search / legal_search / verify_citation).
+// Rendered above the assistant answer so the user can see what was searched and cited.
+export interface SearchActivity {
+  id: string
+  tool: 'web_search' | 'legal_search' | 'verify_citation' | string
+  query: string
+  status: 'searching' | 'done' | 'error'
+  sources: SearchSource[]
+  // For verify_citation: whether CourtListener confirmed the cite.
+  verified?: boolean
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   timestamp: number
   mode: 'chat' | 'research'
+  // Search activity captured during this assistant turn (web/legal lookups).
+  searches?: SearchActivity[]
 }
 
 export interface AgentTool {
@@ -51,6 +72,21 @@ export interface Project {
   updatedAt: number
 }
 
+// A Playbook codifies a firm's negotiation positions per clause (Spellbook-style).
+// When a playbook is active, the agent reviews documents against these positions
+// and flags deviations.
+export interface PlaybookRule {
+  id: string
+  clause: string      // e.g. "Limitation of Liability"
+  position: string    // the firm's preferred / acceptable / unacceptable stance
+}
+
+export interface Playbook {
+  id: string
+  name: string
+  rules: PlaybookRule[]
+}
+
 export interface McpServerConfig {
   id: string
   name: string
@@ -83,6 +119,9 @@ export interface Settings {
   tavilyApiKey: string
   // User-configured MCP servers (extend the agent with external tools).
   mcpServers: McpServerConfig[]
+  // Negotiation playbooks + which one is active ('' = none).
+  playbooks: Playbook[]
+  activePlaybookId: string
 }
 
 export interface SubAgent {

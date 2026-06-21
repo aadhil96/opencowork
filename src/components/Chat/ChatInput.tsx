@@ -2,9 +2,11 @@ import { useRef, useState } from 'react'
 import { useAppStore } from '../../lib/store'
 import { streamChatCompletion, resolveModel } from '../../lib/openrouter'
 import { maybeGenerateSessionTitle } from '../../lib/titles'
-import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, buildDeepResearchSystemPrompt, executeAgentTool, detectSubAgent } from '../../lib/agent'
+import { getActiveTools, buildChatSystemPrompt, buildResearchSystemPrompt, buildDeepResearchSystemPrompt, resolveSubAgentId } from '../../lib/agent'
+import { makeTrackedToolCall } from '../../lib/toolActivity'
 import { useFileUpload } from '../../lib/useFileUpload'
 import JurisdictionPicker from './JurisdictionPicker'
+import SubAgentPicker from './SubAgentPicker'
 import type { Message } from '../../types'
 
 const QUICK_ACTIONS = [
@@ -38,6 +40,23 @@ function SearchIcon() {
   )
 }
 
+function SendArrowIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="19" x2="12" y2="5" />
+      <polyline points="6 11 12 5 18 11" />
+    </svg>
+  )
+}
+
+function StopIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  )
+}
+
 export default function ChatInput() {
   const {
     addMessage, appendToLastMessage, setStreaming, startStreaming, stopStreaming, isStreaming,
@@ -55,6 +74,7 @@ export default function ChatInput() {
   const doc = getActiveDocument()
   const docs = getActiveDocuments()
   const showQuickActions = panelMode === 'chat' && !!doc && !deepResearch
+  const activePlaybook = settings.playbooks?.find(p => p.id === settings.activePlaybookId) ?? null
 
   function autoResize() {
     const el = textareaRef.current
@@ -89,14 +109,15 @@ export default function ChatInput() {
     startStreaming(controller)
 
     const currentDocs = getActiveDocuments()
-    const autoAgentId = panelMode === 'chat' && !deepResearch
-      ? detectSubAgent(text, currentDocs.map(d => d.name).join(' '))
+    const agentId = panelMode === 'chat' && !deepResearch
+      ? resolveSubAgentId(settings.activeSubAgentId, text, currentDocs.map(d => d.name).join(' '))
       : undefined
     const activeProject = getActiveProject()
+    const activePlaybook = settings.playbooks?.find(p => p.id === settings.activePlaybookId) ?? null
     const systemPrompt = deepResearch
       ? buildDeepResearchSystemPrompt(settings.jurisdiction, settings.systemPromptExtra)
       : panelMode === 'chat'
-        ? buildChatSystemPrompt(currentDocs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, autoAgentId, activeProject?.instructions, activeProject?.name)
+        ? buildChatSystemPrompt(currentDocs, settings.jurisdiction, settings.systemPromptExtra, settings.customSkills, agentId, activeProject?.instructions, activeProject?.name, activePlaybook)
         : buildResearchSystemPrompt(settings.jurisdiction, settings.systemPromptExtra)
 
     const { model, baseUrl } = resolveModel(settings)
@@ -111,7 +132,7 @@ export default function ChatInput() {
         : panelMode === 'chat' ? getActiveTools(settings, mcpTools) : [],
       {
         onChunk: (chunk) => appendToLastMessage(chunk),
-        onToolCall: async (name, input) => executeAgentTool(name, input, currentDocs),
+        onToolCall: makeTrackedToolCall(currentDocs),
         onDone: () => setStreaming(false),
         onError: (err) => { appendToLastMessage(`\n\n> *Error: ${err}*`); setStreaming(false) }
       },
@@ -172,7 +193,7 @@ export default function ChatInput() {
 
       {/* Input box: textarea on top, inline toolbar (attach / legal sources /
           deep research / send) along the bottom — Spellbook layout. */}
-      <div className="relative flex flex-col bg-c-input rounded-2xl border border-c-border focus-within:border-c-text4 transition-colors shadow-sm">
+      <div className="relative flex flex-col bg-background rounded-xl border border-input focus-within:ring-1 focus-within:ring-ring transition-shadow shadow-sm">
         <textarea
           ref={textareaRef}
           value={input}
@@ -204,6 +225,9 @@ export default function ChatInput() {
             <span>{docs.length > 0 ? 'Add files' : 'Attach files'}</span>
           </button>
 
+          {/* Specialist picker */}
+          {panelMode === 'chat' && !deepResearch && <SubAgentPicker />}
+
           {/* Legal sources (jurisdiction) */}
           <JurisdictionPicker />
 
@@ -213,7 +237,7 @@ export default function ChatInput() {
             title="Verified citations via CourtListener (US case law). Strict citation discipline; will not fabricate cases."
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors ${
               deepResearch
-                ? 'bg-blue-500 text-white hover:bg-blue-600'
+                ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                 : 'text-c-text3 hover:text-c-text hover:bg-c-elevated'
             }`}
           >
@@ -223,13 +247,15 @@ export default function ChatInput() {
 
           <div className="flex-1" />
 
-          {/* Send / Stop */}
+          {/* Send / Stop — circular icon button (standard chat pattern) */}
           <button
             onClick={() => isStreaming ? stopStreaming() : submit(input.trim())}
             disabled={!isStreaming && !input.trim()}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-c-text text-c-bg hover:opacity-80 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+            title={isStreaming ? 'Stop generating' : 'Send message'}
+            aria-label={isStreaming ? 'Stop generating' : 'Send message'}
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
-            {isStreaming ? 'Stop' : 'Send'}
+            {isStreaming ? <StopIcon /> : <SendArrowIcon />}
           </button>
         </div>
       </div>
@@ -237,6 +263,16 @@ export default function ChatInput() {
       {/* Quick action chips — only when a doc is loaded and not in deep research */}
       {showQuickActions && (
         <div className="flex gap-2 flex-wrap mt-3 justify-center">
+          {activePlaybook && (
+            <button
+              onClick={() => submit(`Review this document against the "${activePlaybook.name}" playbook. For each position, state Complies / Deviates / Silent, quote the relevant clause, and propose a redline.`)}
+              disabled={isStreaming}
+              title={`Check the document against your "${activePlaybook.name}" playbook`}
+              className="px-3 py-1.5 rounded-full text-xs bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Review vs Playbook
+            </button>
+          )}
           {QUICK_ACTIONS.map(a => (
             <button
               key={a.label}

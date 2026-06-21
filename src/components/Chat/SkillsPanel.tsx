@@ -12,7 +12,7 @@ interface SkillMeta {
 }
 
 const BUILTIN_SKILL_META: Record<string, SkillMeta> = {
-  extract_clauses:     { name: 'Extract Clauses',     description: 'Pull out clause types by category',       accent: 'bg-blue-500',    prompt: 'Extract and list all key clauses from this document, organized by type.' },
+  extract_clauses:     { name: 'Extract Clauses',     description: 'Pull out clause types by category',       accent: 'bg-primary',    prompt: 'Extract and list all key clauses from this document, organized by type.' },
   identify_risks:      { name: 'Identify Risks',      description: 'Flag risky or unusual clauses',           accent: 'bg-red-500',     prompt: 'Identify all risks and flag any concerning or unusual clauses in this document.' },
   summarize_document:  { name: 'Summarize',           description: 'Executive summary of the document',       accent: 'bg-emerald-500', prompt: 'Generate a complete structured summary of this document including parties, obligations, and key dates.' },
   search_document:     { name: 'Search Document',     description: 'Find a specific term or concept',         accent: 'bg-violet-500',  prompt: null },
@@ -164,7 +164,7 @@ export default function SkillsPanel() {
                       onChange={e => setSearchQuery(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') submitSearch(); if (e.key === 'Escape') setSearchOpen(false) }}
                       placeholder="Enter term to search…"
-                      className="w-full bg-c-input border border-c-border rounded-lg px-2.5 py-1.5 text-[11px] text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+                      className="w-full bg-c-input border border-c-border rounded-lg px-2.5 py-1.5 text-[11px] text-c-text placeholder-c-text4 outline-none focus:border-ring transition-colors"
                     />
                     <button
                       onClick={submitSearch}

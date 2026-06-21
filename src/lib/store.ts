@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentTool, Document, McpToolInfo, Message, Project, Settings, PanelMode } from '../types'
+import type { AgentTool, Document, McpToolInfo, Message, Project, Settings, PanelMode, SearchActivity } from '../types'
 import { mcpToolsToAgentTools } from './agent'
 
 export interface Session {
@@ -55,6 +55,10 @@ interface AppState {
   appendToLastMessage: (chunk: string) => void
   clearMessages: () => void
 
+  // Search activity (Perplexity-style) — attached to the last assistant message
+  addSearchActivity: (activity: SearchActivity) => void
+  updateSearchActivity: (activityId: string, patch: Partial<SearchActivity>) => void
+
   // Document actions
   addSessionDocument: (doc: Document) => void
   getActiveDocument: () => Document | null
@@ -98,11 +102,13 @@ const defaultSettings: Settings = {
     { id: 'compare_to_standard', enabled: true },
   ],
   customSkills: [],
-  activeSubAgentId: 'general_counsel',
+  activeSubAgentId: 'auto',
   baseUrl: '',
   customModel: '',
   tavilyApiKey: '',
-  mcpServers: []
+  mcpServers: [],
+  playbooks: [],
+  activePlaybookId: ''
 }
 
 // Drop any Document not referenced by some session OR project — prevents
@@ -257,6 +263,46 @@ export const useAppStore = create<AppState>((set, get) => ({
         sessions: state.sessions.map(s =>
           s.id === id ? { ...s, messages: [], updatedAt: Date.now() } : s
         )
+      }
+    })
+  },
+
+  addSearchActivity: (activity) => {
+    set(state => {
+      const id = state.activeSessionId
+      return {
+        sessions: state.sessions.map(s => {
+          if (s.id !== id) return s
+          const msgs = [...s.messages]
+          // Attach to the most recent assistant message (the streaming placeholder).
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'assistant') {
+              msgs[i] = { ...msgs[i], searches: [...(msgs[i].searches ?? []), activity] }
+              break
+            }
+          }
+          return { ...s, messages: msgs }
+        })
+      }
+    })
+  },
+
+  updateSearchActivity: (activityId, patch) => {
+    set(state => {
+      const id = state.activeSessionId
+      return {
+        sessions: state.sessions.map(s => {
+          if (s.id !== id) return s
+          const msgs = [...s.messages]
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i]
+            if (m.role === 'assistant' && m.searches?.some(a => a.id === activityId)) {
+              msgs[i] = { ...m, searches: m.searches.map(a => a.id === activityId ? { ...a, ...patch } : a) }
+              break
+            }
+          }
+          return { ...s, messages: msgs }
+        })
       }
     })
   },
@@ -417,7 +463,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessions = raw.map(s => {
       const legacy = s as Session & { documentId?: string | null }
       const documentIds = legacy.documentIds ?? (legacy.documentId ? [legacy.documentId] : [])
-      return { ...s, documentIds, projectId: s.projectId ?? null }
+      // Any search left mid-flight by a previous session can't still be running —
+      // settle it so it doesn't render a stuck spinner.
+      const messages = s.messages.map(m =>
+        m.searches?.some(a => a.status === 'searching')
+          ? { ...m, searches: m.searches.map(a => a.status === 'searching' ? { ...a, status: 'done' as const } : a) }
+          : m
+      )
+      return { ...s, messages, documentIds, projectId: s.projectId ?? null }
     })
     const projects = data.projects ?? []
     // If the persisted activeProjectId no longer exists (renamed/deleted), clear it.

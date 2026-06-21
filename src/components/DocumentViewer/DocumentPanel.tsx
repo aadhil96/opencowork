@@ -40,6 +40,18 @@ export default function DocumentPanel() {
     )
   }
 
+  // Defense-in-depth: mammoth's HTML is normally safe, but document text is
+  // untrusted and the CSP allows inline JS — strip executable constructs
+  // (<script>/<style>/<iframe>/<object>/<embed>, on* handlers, javascript: URLs)
+  // before rendering it.
+  function sanitizeDocHtml(html: string): string {
+    return html
+      .replace(/<\s*(script|style|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '')
+      .replace(/<\s*(script|style|iframe|object|embed)\b[^>]*\/?>/gi, '')
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/((?:href|src)\s*=\s*)(["']?)\s*javascript:[^"'>\s]*\2/gi, '$1"#"')
+  }
+
   // Returns HTML with only our own <mark> tags; all document-derived text is escaped
   // first so untrusted content can never inject markup.
   function highlight(text: string) {
@@ -78,7 +90,7 @@ export default function DocumentPanel() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search in document…"
-          className="flex-1 bg-c-elevated border border-c-border rounded-lg px-3 py-1.5 text-xs text-c-text placeholder-c-text4 outline-none focus:border-c-text4 transition-colors"
+          className="flex-1 bg-c-elevated border border-c-border rounded-lg px-3 py-1.5 text-xs text-c-text placeholder-c-text4 outline-none focus:border-ring transition-colors"
         />
         <button
           onClick={() => setShowDocPanel(false)}
@@ -102,7 +114,7 @@ export default function DocumentPanel() {
           // Formatted DOCX preview. mammoth produces escaped, semantic HTML, so it's safe to render.
           // Falls back to the highlighted plain-text view while a search term is active.
           <div className="p-5">
-            <div className="doc-html" dangerouslySetInnerHTML={{ __html: doc.html }} />
+            <div className="doc-html" dangerouslySetInnerHTML={{ __html: sanitizeDocHtml(doc.html) }} />
           </div>
         ) : (
           <div className="p-5">
